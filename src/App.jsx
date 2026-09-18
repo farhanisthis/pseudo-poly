@@ -99,7 +99,6 @@ function App() {
   // Train Travel state
   const [travelMode, setTravelMode] = useState(false);
   const [travelSourceIndex, setTravelSourceIndex] = useState(null);
-  const [travelOwnerIndex, setTravelOwnerIndex] = useState(null); // null = player travels their own trains, number = travelling on another player's network
   const [selectedProperty, setSelectedProperty] = useState(null);
   
   // Chance Card Modal state
@@ -201,6 +200,143 @@ function App() {
   const [gameWinner, setGameWinner] = useState(null); // { winnerIndex, winnerName }
   const [showWinnerModal, setShowWinnerModal] = useState(false);
 
+  // --- LocalStorage Session Helpers for Reconnection ---
+  const saveGameSession = (data) => {
+    try {
+      const existing = getSavedGameSession() || {};
+      const session = {
+        ...existing,
+        ...data,
+        savedAt: Date.now()
+      };
+      localStorage.setItem('pseudopoly_active_session', JSON.stringify(session));
+    } catch (e) {
+      console.warn('[Session] Could not save session:', e);
+    }
+  };
+
+  const getSavedGameSession = () => {
+    try {
+      const raw = localStorage.getItem('pseudopoly_active_session');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      // Valid for up to 30 minutes
+      if (Date.now() - (parsed.savedAt || 0) > 30 * 60 * 1000) {
+        clearSavedGameSession();
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+
+  const clearSavedGameSession = () => {
+    try {
+      localStorage.removeItem('pseudopoly_active_session');
+    } catch {}
+  };
+
+  // Live ticking countdown for disconnected players
+  useEffect(() => {
+    const countdownKeys = Object.keys(disconnectCountdowns);
+    if (countdownKeys.length === 0) return;
+
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setDisconnectCountdowns(prev => {
+        let changed = false;
+        const next = {};
+        Object.entries(prev).forEach(([idx, item]) => {
+          const secondsLeft = Math.max(0, Math.ceil((item.deadline - now) / 1000));
+          if (secondsLeft !== item.secondsLeft) changed = true;
+          if (secondsLeft > 0) {
+            next[idx] = { ...item, secondsLeft };
+          } else {
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [disconnectCountdowns]);
+
+  // Resume game handler
+  const handleResumeGame = (sessionToResume = null) => {
+    const session = sessionToResume || resumeSession;
+    if (!session) return;
+    
+    setShowResumeModal(false);
+    setNetworkMode('online');
+    if (session.networkType) setNetworkType(session.networkType);
+    if (session.serverUrl) setServerUrl(session.serverUrl);
+    
+    showToast(`Reconnecting to room ${session.roomCode}...`);
+    const socket = connectSocket(session.serverUrl);
+    
+    const sendReconnect = () => {
+      socket.emit('reconnect_session', {
+        roomCode: session.roomCode,
+        sessionToken: session.sessionToken,
+        name: session.name,
+        avatar: session.avatar,
+        playerIndex: session.playerIndex
+      });
+    };
+    
+    if (socket.connected) {
+      sendReconnect();
+    } else {
+      socket.once('connect', sendReconnect);
+    }
+  };
+
+  const handleDismissResume = () => {
+    setShowResumeModal(false);
+    setResumeSession(null);
+    clearSavedGameSession();
+  };
+
+  // Detect ongoing session on app startup
+  useEffect(() => {
+    const saved = getSavedGameSession();
+    if (saved && saved.roomCode && saved.sessionToken) {
+      console.log('[App] Detected active saved session on startup:', saved);
+      setResumeSession(saved);
+      setShowResumeModal(true);
+    }
+  }, []);
+
+  // Handle visibility change and online event to reconnect active game
+  useEffect(() => {
+    const handleOnline = () => {
+      console.log('[Network] Device back online.');
+      const saved = getSavedGameSession();
+      if (saved && socketRef.current && !socketRef.current.connected) {
+        socketRef.current.connect();
+      }
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('[App] App returned to foreground.');
+        const saved = getSavedGameSession();
+        if (saved && (!socketRef.current || !socketRef.current.connected)) {
+          handleResumeGame(saved);
+        }
+      }
+    };
+
+    window.addEventListener('online', handleOnline);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, []);
+
   // Initialize inventory and effects
   useEffect(() => {
     const initialInventory = {};
@@ -230,6 +366,7 @@ function App() {
   const [showDealModal, setShowDealModal] = useState(false);
   const [dealPhase, setDealPhase] = useState('select'); // 'select' | 'configure' | 'review' | 'result'
   const [selectedDealPlayer, setSelectedDealPlayer] = useState(null);
+  const [dealProposerIndex, setDealProposerIndex] = useState(null);
   const [dealGiveProperties, setDealGiveProperties] = useState([]); // tiles active player gives
   const [dealReceiveProperties, setDealReceiveProperties] = useState([]); // tiles active player receives
   const [dealMoneyOffer, setDealMoneyOffer] = useState(0);
@@ -310,6 +447,9 @@ function App() {
   // Turn Validation Helper
   const validateTurn = () => {
     if (networkMode === 'online' && myPlayerIndex !== currentPlayer) {
+      if (showWarModal && warPhase === 'join') {
+        return true;
+      }
       showToast("Not your turn!");
       return false;
     }
@@ -575,10 +715,22 @@ function App() {
       }
     });
     
-    socket.on('room_created', ({ roomCode: code, playerIndex, gameState, players }) => {
-      console.log('Room created:', code);
+    socket.on('room_created', ({ roomCode: code, playerIndex, sessionToken, gameState, players }) => {
+      console.log('Room created:', code, 'Token:', sessionToken);
       setRoomCode(code);
       setMyPlayerIndex(playerIndex);
+      if (sessionToken) {
+        sessionTokenRef.current = sessionToken;
+        saveGameSession({
+          roomCode: code,
+          sessionToken,
+          playerIndex,
+          name: myIdentity.name,
+          avatar: myIdentity.avatar,
+          networkType,
+          serverUrl: targetUrl
+        });
+      }
       setConnectedPlayers(players);
       if (players) {
         setGamePlayers(players.map((p, i) => ({
@@ -590,16 +742,29 @@ function App() {
           connected: p.connected !== false,
           canBeKicked: p.canBeKicked === true,
           kicked: p.kicked === true,
+          isHost: p.isHost === true,
         })));
       }
       if (gameState) applyGameState(gameState);
       setGameStage('lobby');
     });
     
-    socket.on('joined_room', ({ roomCode: code, playerIndex, gameState, players }) => {
-      console.log('Joined room:', code, 'as player', playerIndex);
+    socket.on('joined_room', ({ roomCode: code, playerIndex, sessionToken, gameState, players }) => {
+      console.log('Joined room:', code, 'as player', playerIndex, 'Token:', sessionToken);
       setRoomCode(code);
       setMyPlayerIndex(playerIndex);
+      if (sessionToken) {
+        sessionTokenRef.current = sessionToken;
+        saveGameSession({
+          roomCode: code,
+          sessionToken,
+          playerIndex,
+          name: myIdentity.name,
+          avatar: myIdentity.avatar,
+          networkType,
+          serverUrl: targetUrl
+        });
+      }
       setConnectedPlayers(players);
       if (players) {
         setGamePlayers(players.map((p, i) => ({
@@ -611,10 +776,19 @@ function App() {
           connected: p.connected !== false,
           canBeKicked: p.canBeKicked === true,
           kicked: p.kicked === true,
+          isHost: p.isHost === true,
         })));
       }
-      if (gameState) applyGameState(gameState);
-      setGameStage('lobby');
+      if (gameState) {
+        applyGameState(gameState);
+        if (gameState.gameStage === 'playing') {
+          setGameStage('playing');
+        } else {
+          setGameStage('lobby');
+        }
+      } else {
+        setGameStage('lobby');
+      }
     });
     
     socket.on('players_updated', ({ players }) => {
@@ -791,8 +965,96 @@ function App() {
       console.log(`[CLIENT] Player ${playerName} exited the game`);
       showToast(`🚪 ${playerName} has left the game!`);
     });
+
+    // Session Reconnected (returned from server upon relaunch or connection restore)
+    socket.on('session_reconnected', ({ roomCode: code, playerIndex, sessionToken, gameState, players, gameStage: serverStage }) => {
+      console.log('[CLIENT] Successfully reconnected to session:', code, 'P' + playerIndex);
+      setRoomCode(code);
+      setMyPlayerIndex(playerIndex);
+      if (sessionToken) {
+        sessionTokenRef.current = sessionToken;
+        saveGameSession({
+          roomCode: code,
+          sessionToken,
+          playerIndex,
+          name: myIdentity.name,
+          avatar: myIdentity.avatar,
+          networkType,
+          serverUrl: targetUrl
+        });
+      }
+      setNetworkMode('online');
+      if (players) {
+        setConnectedPlayers(players);
+        setGamePlayers(players.map((p, i) => ({
+          id: i,
+          name: p.name,
+          avatar: p.avatar,
+          color: AVATAR_COLORS[p.avatar] || '#888888',
+          isBot: false,
+          connected: p.connected !== false,
+          canBeKicked: p.canBeKicked === true,
+          kicked: p.kicked === true,
+          isHost: p.isHost === true
+        })));
+      }
+      if (gameState) {
+        applyGameState(gameState);
+      }
+      const finalStage = serverStage || (gameState?.gameStage === 'playing' ? 'playing' : 'lobby');
+      setGameStage(finalStage);
+      showToast(`✅ Welcome back! Reconnected to room ${code}`);
+    });
+
+    // Player Disconnected (Live countdown sync)
+    socket.on('player_disconnected', ({ playerIndex: pIdx, playerName, reconnectDeadline, graceSeconds }) => {
+      console.log(`[CLIENT] Player ${playerName} (P${pIdx}) disconnected. Deadline:`, reconnectDeadline);
+      const deadline = reconnectDeadline || (Date.now() + (graceSeconds || 60) * 1000);
+      setDisconnectCountdowns(prev => ({
+        ...prev,
+        [pIdx]: {
+          deadline,
+          secondsLeft: Math.max(0, Math.ceil((deadline - Date.now()) / 1000)),
+          playerName: playerName || `Player ${pIdx}`
+        }
+      }));
+      showToast(`⚠️ ${playerName || `Player ${pIdx}`} went offline (${graceSeconds || 60}s to reconnect)`);
+    });
+
+    // Player Reconnected
+    socket.on('player_reconnected', ({ playerIndex: pIdx, playerName }) => {
+      console.log(`[CLIENT] Player ${playerName} (P${pIdx}) reconnected`);
+      setDisconnectCountdowns(prev => {
+        const next = { ...prev };
+        delete next[pIdx];
+        return next;
+      });
+      showToast(`✅ ${playerName} reconnected!`);
+    });
+
+    // Host Migrated
+    socket.on('host_migrated', ({ newHostIndex, newHostName }) => {
+      console.log(`[CLIENT] Host migrated to P${newHostIndex} (${newHostName})`);
+      setConnectedPlayers(prev => prev.map((p, i) => ({ ...p, isHost: i === newHostIndex })));
+      setGamePlayers(prev => prev.map((p, i) => ({ ...p, isHost: i === newHostIndex })));
+      if (myPlayerIndex === newHostIndex) {
+        showToast('👑 You are now the room Host!');
+      } else {
+        showToast(`👑 ${newHostName} is now the host.`);
+      }
+    });
+
+    // Game Won
+    socket.on('game_won', ({ winnerIndex, winnerName }) => {
+      console.log(`[CLIENT] Game Won by P${winnerIndex} (${winnerName})`);
+      clearSavedGameSession();
+      setGameWinner({ winnerIndex, winnerName });
+      setShowWinnerModal(true);
+      showToast(`🏆 ${winnerName} won the game!`);
+    });
     
     socket.on('room_closed', ({ message }) => {
+      clearSavedGameSession();
       showToast(message || 'Room was closed');
       setGameStage('mode_select');
       setNetworkMode('offline');
@@ -1989,6 +2251,8 @@ function App() {
 
   // Handle Manual Turn End (Done Button Click)
   const handleEndTurn = () => {
+    setTravelMode(false);
+    setTravelSourceIndex(null);
     // Online Mode: Send end_turn action to server
     if (networkMode === 'online') {
       setBuyingProperty(null);
@@ -2152,8 +2416,8 @@ function App() {
   // Helper to process tile arrival (Rent, Buy, Special Tiles)
   // ownershipOverride is used in online mode to pass fresh server ownership data
   // isOnlineOverride allows applyGameState to force online behavior even if closure state is stale
-  const handleTileArrival = (playerIndex, tileIndex, isDoubles = false, ownershipOverride = null, diceValuesOverride = null, isOnlineOverride = null) => {
-    console.log(`[handleTileArrival] Player ${playerIndex} arrived at tile ${tileIndex}. OnlineOverride: ${isOnlineOverride}`);
+  const handleTileArrival = (playerIndex, tileIndex, isDoubles = false, ownershipOverride = null, diceValuesOverride = null, isOnlineOverride = null, isFromTravel = false) => {
+    console.log(`[handleTileArrival] Player ${playerIndex} arrived at tile ${tileIndex}. OnlineOverride: ${isOnlineOverride}, isFromTravel: ${isFromTravel}`);
     // Use override if provided (online mode), otherwise use React state
     const effectiveOwnership = ownershipOverride || propertyOwnership;
     const effectiveDiceValues = diceValuesOverride || diceValues;
@@ -2445,39 +2709,21 @@ function App() {
       }
       playPayRentSound(); // Play sad rent payment sound
       
-      // Check if this is a Train tile - if so, offer travel on the owner's network
-      const isTrainTileOpponent = TRAIN_TILES.includes(tileIndex);
-      if (isTrainTileOpponent) {
-        const ownerTrainCount = TRAIN_TILES.filter(t => effectiveOwnership[t] === Number(ownerIndex)).length;
-        if (ownerTrainCount > 1) {
-          // The owner has multiple trains — offer travel to landing player on their network
-          setHistory(prev => [`🚅 ${gamePlayers[playerIndex].name} can travel on ${gamePlayers[ownerIndex].name}'s train network!`, ...prev.slice(0, 9)]);
-          setBuyingProperty({ ...property, isTravelOffer: true, travelOwner: Number(ownerIndex) });
-          setTurnFinished(true); // Allow ending turn if they don't want to travel
-          setIsProcessingTurn(false);
-          return;
-        }
-      }
-      
       // Handle turn end
       endTurn(playerIndex, isDoubles);
     } else if (property && ownerIndex !== undefined && Number(ownerIndex) === playerIndex) {
       // Player owns this property
       
-      // Check for Train Travel
+      // Check for Train Travel (available when landing on your own train station, unless already traveled this turn)
       const isTrain = TRAIN_TILES.includes(tileIndex);
-      if (isTrain) {
-        // Count owned trains
-        const ownedTrains = TRAIN_TILES.filter(t => effectiveOwnership[t] === playerIndex).length;
-        if (ownedTrains > 1) {
-          setHistory(prev => [`🚅 ${gamePlayers[playerIndex].name} arrived at ${property.name}. Travel available?`, ...prev.slice(0, 9)]);
-          // Offer Travel: Set state to show Travel button
-          // We reuse buyingProperty with a flag to indicate this is a travel offer, not a buy offer
-          setBuyingProperty({ ...property, isTravelOffer: true });
-          setTurnFinished(true); // Allow ending turn if they don't want to travel
-          setIsProcessingTurn(false); // Unlock buttons
-          return;
-        }
+      if (isTrain && !isFromTravel) {
+        setHistory(prev => [`🚅 ${gamePlayers[playerIndex].name} arrived at their train station (${property.name}). Travel available!`, ...prev.slice(0, 9)]);
+        // Offer Travel: Set state to show Travel button
+        // We reuse buyingProperty with a flag to indicate this is a travel offer, not a buy offer
+        setBuyingProperty({ ...property, isTravelOffer: true });
+        setTurnFinished(true); // Allow ending turn if they don't want to travel
+        setIsProcessingTurn(false); // Unlock buttons
+        return;
       }
 
       setHistory(prev => [`${gamePlayers[playerIndex].name} arrived at their own ${property.name}. Welcome back!`, ...prev.slice(0, 9)]);
@@ -3247,16 +3493,26 @@ function App() {
 
   // Sell System State (inline since user removed the separate state vars)
   const [showSellModal, setShowSellModal] = useState(false);
+  const [sellSellerIndex, setSellSellerIndex] = useState(null);
   const [sellMode, setSellMode] = useState(false);
   const [sellTotalRefund, setSellTotalRefund] = useState(0);
   const [sellNoBuildingsModal, setSellNoBuildingsModal] = useState(false);
   const [sellPreviewLevels, setSellPreviewLevels] = useState({});
 
-  const handleSell = () => {
-    if (!validateTurn()) return;
+  const handleSell = (targetIdx = null) => {
+    const isWarJoin = showWarModal && warPhase === 'join';
+    const seller = targetIdx !== null && typeof targetIdx === 'number'
+      ? targetIdx
+      : (networkMode === 'online' && myPlayerIndex !== null ? myPlayerIndex : currentPlayer);
+
+    if (networkMode === 'online' && myPlayerIndex !== null && myPlayerIndex !== seller && !isWarJoin) {
+      showToast("Not your turn!");
+      return;
+    }
+    setSellSellerIndex(seller);
     
     // Check if player owns any buildings
-    const ownedProperties = Object.keys(propertyOwnership).map(Number).filter(idx => propertyOwnership[idx] === currentPlayer);
+    const ownedProperties = Object.keys(propertyOwnership).map(Number).filter(idx => propertyOwnership[idx] === seller);
     const hasBuildings = ownedProperties.some(idx => (propertyLevels[idx] || 0) > 0);
     
     if (!hasBuildings) {
@@ -3275,8 +3531,12 @@ function App() {
   const handleSellTileTap = (tileIndex) => {
     if (!sellMode) return;
     
+    const seller = (sellSellerIndex !== null && typeof sellSellerIndex === 'number')
+      ? sellSellerIndex
+      : (networkMode === 'online' && myPlayerIndex !== null ? myPlayerIndex : currentPlayer);
+
     const owner = propertyOwnership[tileIndex];
-    if (owner !== currentPlayer) return;
+    if (owner !== seller) return;
     
     const currentLevel = sellPreviewLevels[tileIndex] || 0;
     if (currentLevel <= 0) return;
@@ -3296,9 +3556,14 @@ function App() {
     setShowSellModal(false);
     setSellTotalRefund(0);
     setSellPreviewLevels({});
+    setSellSellerIndex(null);
   };
 
   const closeSellMode = () => {
+    const seller = (sellSellerIndex !== null && typeof sellSellerIndex === 'number')
+      ? sellSellerIndex
+      : (networkMode === 'online' && myPlayerIndex !== null ? myPlayerIndex : currentPlayer);
+
     if (sellTotalRefund > 0) {
       if (networkMode === 'online') {
         // Server handles money addition and broadcasts floating price to all
@@ -3309,16 +3574,16 @@ function App() {
         // Offline mode: local update with animation
         setPlayerMoney(prev => {
           const updated = [...prev];
-          updated[currentPlayer] += sellTotalRefund;
+          updated[seller] += sellTotalRefund;
           return updated;
         });
         
         setPropertyLevels({ ...sellPreviewLevels });
         
-        setHistory(prev => [`💰 ${gamePlayers[currentPlayer].name} sold buildings for $${sellTotalRefund.toLocaleString()}`, ...prev.slice(0, 9)]);
+        setHistory(prev => [`💰 ${gamePlayers[seller]?.name || 'Player'} sold buildings for $${sellTotalRefund.toLocaleString()}`, ...prev.slice(0, 9)]);
         
         const animKey = getUniqueKey();
-        const playerPos = playerPositions[currentPlayer];
+        const playerPos = playerPositions[seller];
         setFloatingPrices(prev => [...prev, { price: sellTotalRefund, tileIndex: playerPos, key: animKey, isPositive: true }]);
         setTimeout(() => setFloatingPrices(prev => prev.filter(fp => fp.key !== animKey)), 3000);
         
@@ -3332,6 +3597,7 @@ function App() {
     setShowSellModal(false);
     setSellTotalRefund(0);
     setSellPreviewLevels({});
+    setSellSellerIndex(null);
   };
 
   // Menu System Handlers
@@ -3356,6 +3622,11 @@ function App() {
   };
   
   const handleExitGame = () => {
+    // Clear persisted session so player is not reconnected automatically
+    clearSavedGameSession();
+    setResumeSession(null);
+    setShowResumeModal(false);
+
     // Send exit action to server (if online)
     if (networkMode === 'online') {
       sendGameAction('exit_game', {});
@@ -3414,11 +3685,12 @@ function App() {
   };
 
   const handleBank = (targetIdx = null) => {
+    const isWarJoin = showWarModal && warPhase === 'join';
     const target = targetIdx !== null && typeof targetIdx === 'number'
       ? targetIdx 
       : (networkMode === 'online' && myPlayerIndex !== null ? myPlayerIndex : currentPlayer);
       
-    if (networkMode === 'online' && myPlayerIndex !== null && myPlayerIndex !== target) {
+    if (networkMode === 'online' && myPlayerIndex !== null && myPlayerIndex !== target && !isWarJoin) {
       showToast("Not your turn!");
       return;
     }
@@ -3471,7 +3743,7 @@ function App() {
     // Cash register sound
     playBuySound();
 
-    setHistory(prev => [`🏦 ${gamePlayers[borrower].name} took a $${principal.toLocaleString()} loan`, ...prev.slice(0, 9)]);
+    setHistory(prev => [`🏦 ${gamePlayers[borrower]?.name || 'Player'} took a $${principal.toLocaleString()} loan`, ...prev.slice(0, 9)]);
     setShowBankModal(false);
   };
 
@@ -3515,7 +3787,7 @@ function App() {
     // Cash register sound
     playBuySound();
 
-    setHistory(prev => [`🏦 ${gamePlayers[currentPlayer].name} repaid their loan early`, ...prev.slice(0, 9)]);
+    setHistory(prev => [`🏦 ${gamePlayers[borrower]?.name || 'Player'} repaid their loan early`, ...prev.slice(0, 9)]);
     setShowBankModal(false);
   };
 
@@ -3744,19 +4016,30 @@ function App() {
     setIncomingDeal(null);
     setShowDealReviewModal(false);
     setActiveDeal(null);
+    setDealProposerIndex(null);
     if (networkMode === 'online') {
       sendGameAction('deal_cancel');
     }
   };
 
   // Handle Deal Initiate
-  const handleDeal = () => {
-    if (!validateTurn()) return;
+  const handleDeal = (proposerIdx = null) => {
+    const isWarJoin = showWarModal && warPhase === 'join';
+    const targetProposer = proposerIdx !== null && typeof proposerIdx === 'number'
+      ? proposerIdx
+      : (networkMode === 'online' && myPlayerIndex !== null ? myPlayerIndex : currentPlayer);
+
+    if (networkMode === 'online' && myPlayerIndex !== null && myPlayerIndex !== targetProposer && !isWarJoin) {
+      showToast("Not your turn!");
+      return;
+    }
     
     // Check if player is allowed to deal (allow during Property War join phase to raise funds)
     if (showAuctionModal || isProcessingTurn || (showWarModal && warPhase !== 'join') || showBuyModal || isRolling) {
       return;
     }
+
+    setDealProposerIndex(targetProposer);
 
     // Play interaction sound
     try {
@@ -3787,7 +4070,9 @@ function App() {
     if (!dealSelectionMode) return;
 
     const owner = propertyOwnership[tileIndex];
-    const proposerIndex = networkMode === 'online' ? myPlayerIndex : currentPlayer;
+    const proposerIndex = (dealProposerIndex !== null && typeof dealProposerIndex === 'number')
+      ? dealProposerIndex
+      : (networkMode === 'online' ? myPlayerIndex : currentPlayer);
     
     // Check if it's active player's property
     if (owner === proposerIndex) {
@@ -3815,7 +4100,9 @@ function App() {
 
   // Handle Deal Offer Submit
   const handleDealOffer = () => {
-    const proposerIndex = networkMode === 'online' ? myPlayerIndex : currentPlayer;
+    const proposerIndex = (dealProposerIndex !== null && typeof dealProposerIndex === 'number')
+      ? dealProposerIndex
+      : (networkMode === 'online' ? myPlayerIndex : currentPlayer);
     const dealData = {
       proposer: proposerIndex,
       recipient: selectedDealPlayer,
@@ -3842,7 +4129,13 @@ function App() {
     const deal = incomingDeal;
     if (!deal) return;
 
-    // Transfer properties: proposer gives -> recipient receives
+    if (networkMode === 'online') {
+      sendGameAction('deal_response', { accepted: true, deal });
+      resetDealState();
+      return;
+    }
+
+    // Offline mode:
     setPropertyOwnership(prev => {
       const updated = { ...prev };
       deal.giveProperties.forEach(tile => {
@@ -3854,7 +4147,6 @@ function App() {
       return updated;
     });
 
-    // Transfer money (bidirectional: positive = proposer gives, negative = proposer receives)
     if (deal.moneyOffer !== 0) {
       setPlayerMoney(prev => {
         const updated = [...prev];
@@ -3862,25 +4154,14 @@ function App() {
         updated[deal.recipient] += deal.moneyOffer;
         return updated;
       });
-
-      // Floating prices are broadcast by server on deal_response - no need to call here
     }
 
     // Add history
     const proposerName = gamePlayers[deal.proposer]?.name || 'Player';
     const recipientName = gamePlayers[deal.recipient]?.name || 'Player';
     setHistory(prev => [`✅ ${proposerName} and ${recipientName} made a deal!`, ...prev.slice(0, 9)]);
-
-    // Cash register sound (deal involves value transfer)
     playBuySound();
-
-    if (networkMode === 'online') {
-      sendGameAction('deal_response', { accepted: true, deal });
-    } else {
-      // Offline mode: Show result to proposer locally
-      showDealResult(true, deal);
-    }
-
+    showDealResult(true, deal);
     resetDealState();
   };
 
@@ -3904,21 +4185,14 @@ function App() {
 
   // Handle Parking Confirm
   const handleParkingConfirm = () => {
-    // Mark player to skip next turn
-    setSkippedTurns(prev => {
-      const updated = { ...prev, [currentPlayer]: true };
-      
-      // Sync to server (server doesn't have skippedTurns yet, but we send via update_state)
-      // Note: Server may need to be updated to handle this, for now client-side tracking
-      if (networkMode === 'online') {
-        // We'll sync this as part of general state - but server doesn't track skippedTurns
-        // For now, just end turn and hope sync works via other mechanisms
-        sendGameAction('close_modal');
-      }
-      
-      return updated;
-    });
-    
+    if (networkMode === 'online') {
+      sendGameAction('parking_confirm');
+      closeAllModals();
+      return;
+    }
+
+    // Mark player to skip next turn locally for offline
+    setSkippedTurns(prev => ({ ...prev, [currentPlayer]: true }));
     closeAllModals(() => {
       setTimeout(() => {
         endTurn(currentPlayer, false);
@@ -4254,34 +4528,34 @@ function App() {
 
   // Handle Travel Start
   const handleTravelStart = () => {
-    // travelOwner: if set, player is travelling on that owner's network; otherwise, their own
-    const travelOwner = buyingProperty?.travelOwner ?? null;
     setTravelMode(true);
     setTravelSourceIndex(playerPositions[currentPlayer]);
-    setTravelOwnerIndex(travelOwner);
-    const networkOwnerName = travelOwner !== null ? gamePlayers[travelOwner]?.name + "'s" : 'your';
-    setHistory(prev => [`Select a train station to travel to on ${networkOwnerName} network...`, ...prev.slice(0, 9)]);
-    // Close any open modals (like the "Buy/Travel" prompt if it was a modal, or just the button state)
+    setHistory(prev => [`🚅 Select any other train station to travel to...`, ...prev.slice(0, 9)]);
+    // Close any open modals
     setBuyingProperty(null); 
   };
 
+  // Handle Travel Cancel
+  const handleTravelCancel = () => {
+    setTravelMode(false);
+    setTravelSourceIndex(null);
+    setHistory(prev => [`Train travel cancelled.`, ...prev.slice(0, 9)]);
+  };
 
   // Handle Travel Confirmation (Move and Pay)
   const handleTravelConfirm = async (targetIndex, cost) => {
     setTravelMode(false);
     setTravelSourceIndex(null);
-    setTravelOwnerIndex(null);
     
+    if (networkMode === 'online') {
+      sendGameAction('train_travel', { targetIndex, cost });
+      return;
+    }
+
     // Deduct cost
     setPlayerMoney(prev => {
       const updated = [...prev];
       updated[currentPlayer] -= cost;
-      
-      // Sync money to server
-      if (networkMode === 'online') {
-        sendGameAction('update_state', { playerMoney: updated });
-      }
-      
       return updated;
     });
     
@@ -4295,20 +4569,8 @@ function App() {
     // Move player
     const currentPos = playerPositions[currentPlayer];
     const steps = (targetIndex - currentPos + 36) % 36;
-    if (networkMode === 'online') {
-      sendGameAction('chance_move', {
-        playerIndex: currentPlayer,
-        oldPos: currentPos,
-        targetPos: targetIndex,
-        steps,
-        delay: 150,
-        cardText: `Traveled to ${getTileName(targetIndex)}`,
-        isJail: false
-      });
-      return;
-    }
     await movePlayerToken(currentPlayer, steps, 150);
-    handleTileArrival(currentPlayer, targetIndex, false);
+    handleTileArrival(currentPlayer, targetIndex, false, null, null, null, true);
   };
 
   // Handle Tile Click (Open Property Details OR Select Travel Destination OR Auction Selection OR Deal Selection)
@@ -4349,7 +4611,7 @@ function App() {
       // Must NOT be owned by me
       if (Number(owner) === myPlayerIndex) {
          // Optional: Alert user "You can't auction your own property!"
-         return;
+         return; 
       }
       
       // Valid selection
@@ -4364,14 +4626,8 @@ function App() {
       // Check if valid target (must be a Train tile, not the current station)
       const isTrain = TRAIN_TILES.includes(tileIndex);
       const isCurrent = tileIndex === travelSourceIndex;
-
-      // Determine whose network we're travelling on:
-      // - travelOwnerIndex !== null  → travelling on that player's trains (landed on opponent's train)
-      // - travelOwnerIndex === null  → travelling on own trains
-      const networkOwner = travelOwnerIndex !== null ? travelOwnerIndex : currentPlayer;
-      const isOwnedByNetwork = propertyOwnership[tileIndex] === networkOwner;
       
-      if (isTrain && isOwnedByNetwork && !isCurrent) {
+      if (isTrain && !isCurrent) {
         // Calculate Cost based on station-to-station distance
         const sortedTrains = [...TRAIN_TILES].sort((a, b) => a - b);
         const srcIdx = sortedTrains.indexOf(travelSourceIndex);
@@ -4381,7 +4637,7 @@ function App() {
         const cost = stationDist * 50;
         
         if (playerMoney[currentPlayer] < cost) {
-          alert(`Not enough money to travel! Cost: $${cost}`);
+          showToast(`Not enough money to travel! Need $${cost}`);
           return;
         }
         
@@ -4480,17 +4736,15 @@ function App() {
 
     const isTrain = TRAIN_TILES.includes(tileIndex);
     const isCurrent = tileIndex === travelSourceIndex;
-    const networkOwner = travelOwnerIndex !== null ? travelOwnerIndex : currentPlayer;
-    const isOwnedByNetwork = propertyOwnership[tileIndex] === networkOwner;
 
-    if (isTrain && isOwnedByNetwork && !isCurrent) {
+    if (isTrain && !isCurrent) {
       // Valid destination — glow it up
       return {
-        filter: 'brightness(1.2) drop-shadow(0 0 12px #2196F3)',
-        boxShadow: '0 0 14px #2196F3',
+        filter: 'brightness(1.25) drop-shadow(0 0 14px #2196F3)',
+        boxShadow: '0 0 16px #2196F3',
         border: '2px solid #2196F3',
         cursor: 'pointer',
-        zIndex: 5,
+        zIndex: 10,
         transition: 'all 0.3s ease'
       };
     }
@@ -5112,6 +5366,112 @@ function App() {
         <div className="rotate-subtext">Or rotate your device manually</div>
       </div>
 
+      {/* Resume Active Session Modal */}
+      {showResumeModal && resumeSession && (
+        <div className="modal-overlay" style={{ zIndex: 999999 }}>
+          <div className="buy-modal" style={{
+            background: 'linear-gradient(135deg, #1e293b, #0f172a)',
+            color: '#fff',
+            maxWidth: '340px',
+            borderRadius: '16px',
+            border: '2px solid #3b82f6',
+            boxShadow: '0 12px 36px rgba(0,0,0,0.7)',
+            textAlign: 'center',
+            padding: '24px 20px',
+            pointerEvents: 'auto'
+          }}>
+            <div style={{ fontSize: '36px', marginBottom: '8px' }}>🎮</div>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: '18px', color: '#60a5fa', fontWeight: 'bold' }}>
+              Ongoing Game Found!
+            </h3>
+            <p style={{ margin: '0 0 16px 0', fontSize: '13px', color: '#94a3b8', lineHeight: 1.4 }}>
+              You were in room <strong style={{ color: '#fff', letterSpacing: '1px' }}>#{resumeSession.roomCode}</strong> as <strong>{resumeSession.name}</strong>. Reconnect now to resume?
+            </p>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+              <button
+                onClick={handleDismissResume}
+                style={{
+                  background: 'rgba(255,255,255,0.1)',
+                  color: '#94a3b8',
+                  border: '1px solid rgba(255,255,255,0.2)',
+                  padding: '10px 16px',
+                  borderRadius: '10px',
+                  fontSize: '13px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  flex: 1
+                }}
+              >
+                DISMISS
+              </button>
+              <button
+                onClick={() => handleResumeGame()}
+                style={{
+                  background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+                  color: '#fff',
+                  border: 'none',
+                  padding: '10px 16px',
+                  borderRadius: '10px',
+                  fontSize: '13px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  flex: 1,
+                  boxShadow: '0 4px 12px rgba(37,99,235,0.4)'
+                }}
+              >
+                RECONNECT
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Game Winner Modal */}
+      {showWinnerModal && gameWinner && (
+        <div className="modal-overlay" style={{ zIndex: 999999 }}>
+          <div className="buy-modal" style={{
+            background: 'linear-gradient(135deg, #1e293b, #0f172a)',
+            color: '#fff',
+            maxWidth: '340px',
+            borderRadius: '16px',
+            border: '2px solid #eab308',
+            boxShadow: '0 12px 36px rgba(0,0,0,0.7)',
+            textAlign: 'center',
+            padding: '24px 20px',
+            pointerEvents: 'auto'
+          }}>
+            <div style={{ fontSize: '48px', marginBottom: '10px' }}>🏆</div>
+            <h2 style={{ margin: '0 0 6px 0', fontSize: '22px', color: '#facc15', fontWeight: 'bold' }}>
+              VICTORY!
+            </h2>
+            <p style={{ margin: '0 0 18px 0', fontSize: '15px', color: '#e2e8f0' }}>
+              <strong>{gameWinner.winnerName}</strong> has won the game!
+            </p>
+            <button
+              onClick={() => {
+                setShowWinnerModal(false);
+                setGameWinner(null);
+                handleExitGame();
+              }}
+              style={{
+                background: 'linear-gradient(135deg, #ca8a04, #a16207)',
+                color: '#fff',
+                border: 'none',
+                padding: '12px 24px',
+                borderRadius: '10px',
+                fontSize: '14px',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                width: '100%',
+                boxShadow: '0 4px 14px rgba(202,138,4,0.4)'
+              }}
+            >
+              RETURN TO MENU
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Revamped Matchmaking & Startup Screen */}
       {gameStage !== 'playing' && (
         <MatchmakingView
@@ -5131,6 +5491,7 @@ function App() {
           myPlayerIndex={myPlayerIndex}
           startGame={startGame}
           onLeaveRoom={() => {
+            clearSavedGameSession();
             if (socketRef.current) {
               socketRef.current.disconnect();
               socketRef.current = null;
@@ -5168,21 +5529,21 @@ function App() {
         {/* Game Board */}
       <div className={`board ${dealSelectionMode || buildMode ? 'deal-selection-active' : ''}`}>
         {/* Corner Spaces */}
-        <div className="corner start" style={(isSelectingAuctionProperty || (networkMode==='online' && ['thinking', 'announcing'].includes(auctionState?.status))) ? {filter: 'grayscale(100%) brightness(0.6)', transition: 'filter 0.3s'} : {transition: 'filter 0.3s'}}>
+        <div className="corner start" style={(travelMode || isSelectingAuctionProperty || (networkMode==='online' && ['thinking', 'announcing'].includes(auctionState?.status))) ? {filter: 'grayscale(100%) brightness(0.6)', transition: 'filter 0.3s'} : {transition: 'filter 0.3s'}}>
           <img src={startIcon} alt="Start" className="corner-icon" />
         </div>
         
-        <div className="corner parking" style={(isSelectingAuctionProperty || (networkMode==='online' && ['thinking', 'announcing'].includes(auctionState?.status))) ? {filter: 'grayscale(100%) brightness(0.6)', transition: 'filter 0.3s'} : {transition: 'filter 0.3s'}}>
+        <div className="corner parking" style={(travelMode || isSelectingAuctionProperty || (networkMode==='online' && ['thinking', 'announcing'].includes(auctionState?.status))) ? {filter: 'grayscale(100%) brightness(0.6)', transition: 'filter 0.3s'} : {transition: 'filter 0.3s'}}>
           <img src={parkingIcon} alt="Free Parking" className="corner-icon" />
         </div>
         
-        <div className="corner robbank" style={(isSelectingAuctionProperty || (networkMode==='online' && ['thinking', 'announcing'].includes(auctionState?.status))) ? {filter: 'grayscale(100%) brightness(0.6)', transition: 'filter 0.3s'} : {transition: 'filter 0.3s'}}>
+        <div className="corner robbank" style={(travelMode || isSelectingAuctionProperty || (networkMode==='online' && ['thinking', 'announcing'].includes(auctionState?.status))) ? {filter: 'grayscale(100%) brightness(0.6)', transition: 'filter 0.3s'} : {transition: 'filter 0.3s'}}>
           <span className="rob-text">ROB</span>
           <img src={robBankIcon} alt="Rob Bank" className="corner-icon-center" />
           <span className="bank-text">BANK</span>
         </div>
         
-        <div className="corner jail" style={(isSelectingAuctionProperty || (networkMode==='online' && ['thinking', 'announcing'].includes(auctionState?.status))) ? {filter: 'grayscale(100%) brightness(0.6)', transition: 'filter 0.3s'} : {transition: 'filter 0.3s'}}>
+        <div className="corner jail" style={(travelMode || isSelectingAuctionProperty || (networkMode==='online' && ['thinking', 'announcing'].includes(auctionState?.status))) ? {filter: 'grayscale(100%) brightness(0.6)', transition: 'filter 0.3s'} : {transition: 'filter 0.3s'}}>
           <span className="jail-text">JAIL</span>
           <img src={jailIcon} alt="Jail" className="corner-icon-center" />
         </div>
@@ -5452,6 +5813,58 @@ function App() {
                 {renderDiceDots(diceValues[1])}
               </div>
             </div>
+
+            {/* Offline Turn Waiting Banner */}
+            {networkMode === 'online' && gamePlayers[currentPlayer] && !gamePlayers[currentPlayer].connected && !gamePlayers[currentPlayer].kicked && (
+              <div className="offline-turn-banner" style={{
+                background: 'linear-gradient(135deg, #ea580c, #c2410c)',
+                color: '#fff',
+                padding: '6px 12px',
+                borderRadius: '8px',
+                fontSize: '11px',
+                fontWeight: 'bold',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '4px',
+                margin: '6px auto',
+                maxWidth: '240px',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                textAlign: 'center',
+                zIndex: 10
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <span>⏳</span>
+                  <span>
+                    Waiting for <strong>{gamePlayers[currentPlayer].name}</strong>
+                    {disconnectCountdowns[currentPlayer]?.secondsLeft !== undefined ? ` (${disconnectCountdowns[currentPlayer].secondsLeft}s)` : ''}...
+                  </span>
+                </div>
+                {(gamePlayers[myPlayerIndex]?.isHost || myPlayerIndex === 0) && (
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`Skip turn for offline player ${gamePlayers[currentPlayer].name}?`)) {
+                        sendGameAction('skip_offline_turn', { targetIndex: currentPlayer });
+                      }
+                    }}
+                    style={{
+                      background: '#fff',
+                      color: '#c2410c',
+                      border: 'none',
+                      padding: '3px 8px',
+                      borderRadius: '4px',
+                      fontSize: '10px',
+                      fontWeight: 'bold',
+                      cursor: 'pointer',
+                      marginTop: '2px'
+                    }}
+                  >
+                    Host: Skip Turn
+                  </button>
+                )}
+              </div>
+            )}
+
             <div className="button-group">
               {/* Only show buttons if offline OR it's this player's turn */}
               {(networkMode === 'offline' || myPlayerIndex === currentPlayer) && (
@@ -5506,8 +5919,18 @@ function App() {
                           TRAVEL
                         </button>
                       )}
+
+                      {travelMode && (
+                        <button 
+                          className="buy-button" 
+                          onClick={handleTravelCancel}
+                          style={{ background: '#757575' }}
+                        >
+                          CANCEL
+                        </button>
+                      )}
                       <button 
-                        className={`roll-button ${turnFinished ? 'done' : ''} ${(!buyingProperty || showBuyModal) ? 'solo' : ''}`} 
+                        className={`roll-button ${turnFinished ? 'done' : ''} ${((!buyingProperty || showBuyModal) && !travelMode) ? 'solo' : ''}`} 
                         onClick={() => {
                           if (turnFinished || skippedTurns[currentPlayer]) {
                             // If balance is negative, show bankruptcy modal instead of ending turn
@@ -5562,133 +5985,143 @@ function App() {
             
             {/* Body */}
             <div className="modal-body">
-              {dealPhase === 'select' ? (
-                /* Player Selection Phase */
-                <div className="deal-player-grid">
-                  {gamePlayers.map((player, idx) => {
-                    if (idx === currentPlayer) return null; // Skip active player
-                    return (
-                      <div 
-                        key={idx} 
-                        className="deal-player-item"
-                        onClick={() => handleDealPlayerSelect(idx)}
-                      >
-                        <img src={player.avatar} alt={player.name} className="deal-player-avatar" />
-                        <span className="deal-player-name">{player.name}</span>
+              {(() => {
+                const effectiveProposer = (dealProposerIndex !== null && typeof dealProposerIndex === 'number')
+                  ? dealProposerIndex
+                  : (networkMode === 'online' && myPlayerIndex !== null ? myPlayerIndex : currentPlayer);
+
+                return (
+                  <>
+                    {dealPhase === 'select' ? (
+                      /* Player Selection Phase */
+                      <div className="deal-player-grid">
+                        {gamePlayers.map((player, idx) => {
+                          if (idx === effectiveProposer) return null; // Skip active proposer
+                          return (
+                            <div 
+                              key={idx} 
+                              className="deal-player-item"
+                              onClick={() => handleDealPlayerSelect(idx)}
+                            >
+                              <img src={player.avatar} alt={player.name} className="deal-player-avatar" />
+                              <span className="deal-player-name">{player.name}</span>
+                            </div>
+                          );
+                        })}
                       </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                /* Configuration Phase */
-                <div className="deal-config-container">
-                  {/* Left Column - Active Player (Giving) */}
-                  <div className="deal-column deal-give-column">
-                    <div className="deal-column-header">
-                      <img src={gamePlayers[currentPlayer]?.avatar} alt="" className="deal-header-avatar" />
-                      <span>{gamePlayers[currentPlayer]?.name}</span>
-                      <span className="deal-subtitle">You Give</span>
-                    </div>
-                    <div className="deal-property-list">
-                      {dealGiveProperties.map(tileIndex => {
-                        const tile = getPropertyByTileIndex(tileIndex);
-                        return (
-                          <div 
-                            key={tileIndex} 
-                            className="deal-property-box"
-                            style={{ background: tile?.color || '#888' }}
-                          >
-                            {tile?.name || `Tile ${tileIndex}`}
-                          </div>
-                        );
-                      })}
-                      {dealGiveProperties.length === 0 && (
-                        <div className="deal-empty-hint">Tap your properties on the board</div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Divider */}
-                  <div className="deal-divider"></div>
-
-                  {/* Right Column - Selected Player (Receiving) */}
-                  <div className="deal-column deal-receive-column">
-                    <div className="deal-column-header">
-                      <img src={gamePlayers[selectedDealPlayer]?.avatar} alt="" className="deal-header-avatar" />
-                      <span>{gamePlayers[selectedDealPlayer]?.name}</span>
-                      <span className="deal-subtitle">You Get</span>
-                    </div>
-                    <div className="deal-property-list">
-                      {dealReceiveProperties.map(tileIndex => {
-                        const tile = getPropertyByTileIndex(tileIndex);
-                        return (
-                          <div 
-                            key={tileIndex} 
-                            className="deal-property-box"
-                            style={{ background: tile?.color || '#888' }}
-                          >
-                            {tile?.name || `Tile ${tileIndex}`}
-                          </div>
-                        );
-                      })}
-                      {dealReceiveProperties.length === 0 && (
-                        <div className="deal-empty-hint">Tap their properties on the board</div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Money Slider (only in configure phase) - Bidirectional */}
-              {dealPhase === 'configure' && (
-                <div className="deal-money-section">
-                  <div className="deal-money-label">
-                    {dealMoneyOffer === 0 ? (
-                      <span>No money exchange</span>
-                    ) : dealMoneyOffer > 0 ? (
-                      <span style={{ color: '#f44336' }}>You give: ${dealMoneyOffer.toLocaleString()}</span>
                     ) : (
-                      <span style={{ color: '#4CAF50' }}>You get: ${Math.abs(dealMoneyOffer).toLocaleString()}</span>
+                      /* Configuration Phase */
+                      <div className="deal-config-container">
+                        {/* Left Column - Active Player (Giving) */}
+                        <div className="deal-column deal-give-column">
+                          <div className="deal-column-header">
+                            <img src={gamePlayers[effectiveProposer]?.avatar} alt="" className="deal-header-avatar" />
+                            <span>{gamePlayers[effectiveProposer]?.name}</span>
+                            <span className="deal-subtitle">You Give</span>
+                          </div>
+                          <div className="deal-property-list">
+                            {dealGiveProperties.map(tileIndex => {
+                              const tile = getPropertyByTileIndex(tileIndex);
+                              return (
+                                <div 
+                                  key={tileIndex} 
+                                  className="deal-property-box"
+                                  style={{ background: tile?.color || '#888' }}
+                                >
+                                  {tile?.name || `Tile ${tileIndex}`}
+                                </div>
+                              );
+                            })}
+                            {dealGiveProperties.length === 0 && (
+                              <div className="deal-empty-hint">Tap your properties on the board</div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Divider */}
+                        <div className="deal-divider"></div>
+
+                        {/* Right Column - Selected Player (Receiving) */}
+                        <div className="deal-column deal-receive-column">
+                          <div className="deal-column-header">
+                            <img src={gamePlayers[selectedDealPlayer]?.avatar} alt="" className="deal-header-avatar" />
+                            <span>{gamePlayers[selectedDealPlayer]?.name}</span>
+                            <span className="deal-subtitle">You Get</span>
+                          </div>
+                          <div className="deal-property-list">
+                            {dealReceiveProperties.map(tileIndex => {
+                              const tile = getPropertyByTileIndex(tileIndex);
+                              return (
+                                <div 
+                                  key={tileIndex} 
+                                  className="deal-property-box"
+                                  style={{ background: tile?.color || '#888' }}
+                                >
+                                  {tile?.name || `Tile ${tileIndex}`}
+                                </div>
+                              );
+                            })}
+                            {dealReceiveProperties.length === 0 && (
+                              <div className="deal-empty-hint">Tap their properties on the board</div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     )}
-                  </div>
-                  <div className="deal-slider-row">
-                    <button 
-                      className="deal-slider-btn" 
-                      onClick={() => setDealMoneyOffer(prev => Math.max(-(playerMoney[selectedDealPlayer] || 0), prev - 100))}
-                      style={{ background: '#4CAF50' }}
-                    >
-                      −
-                    </button>
-                    <input 
-                      type="range" 
-                      min={-(playerMoney[selectedDealPlayer] || 0)}
-                      max={playerMoney[currentPlayer] || 0}
-                      step="100"
-                      value={dealMoneyOffer}
-                      onChange={(e) => setDealMoneyOffer(parseInt(e.target.value))}
-                      className="deal-money-slider"
-                      style={{ 
-                        background: dealMoneyOffer === 0 
-                          ? '#888' 
-                          : dealMoneyOffer > 0 
-                            ? `linear-gradient(to right, #888 50%, #f44336 50%)` 
-                            : `linear-gradient(to left, #888 50%, #4CAF50 50%)` 
-                      }}
-                    />
-                    <button 
-                      className="deal-slider-btn" 
-                      onClick={() => setDealMoneyOffer(prev => Math.min(playerMoney[currentPlayer] || 0, prev + 100))}
-                      style={{ background: '#f44336' }}
-                    >
-                      +
-                    </button>
-                  </div>
-                  <div className="deal-slider-labels">
-                    <span style={{ color: '#4CAF50' }}>← Get</span>
-                    <span style={{ color: '#f44336' }}>Give →</span>
-                  </div>
-                </div>
-              )}
+
+                    {/* Money Slider (only in configure phase) - Bidirectional */}
+                    {dealPhase === 'configure' && (
+                      <div className="deal-money-section">
+                        <div className="deal-money-label">
+                          {dealMoneyOffer === 0 ? (
+                            <span>No money exchange</span>
+                          ) : dealMoneyOffer > 0 ? (
+                            <span style={{ color: '#f44336' }}>You give: ${dealMoneyOffer.toLocaleString()}</span>
+                          ) : (
+                            <span style={{ color: '#4CAF50' }}>You get: ${Math.abs(dealMoneyOffer).toLocaleString()}</span>
+                          )}
+                        </div>
+                        <div className="deal-slider-row">
+                          <button 
+                            className="deal-slider-btn" 
+                            onClick={() => setDealMoneyOffer(prev => Math.max(-(playerMoney[selectedDealPlayer] || 0), prev - 100))}
+                            style={{ background: '#4CAF50' }}
+                          >
+                            −
+                          </button>
+                          <input 
+                            type="range" 
+                            min={-(playerMoney[selectedDealPlayer] || 0)}
+                            max={playerMoney[effectiveProposer] || 0}
+                            step="100"
+                            value={dealMoneyOffer}
+                            onChange={(e) => setDealMoneyOffer(parseInt(e.target.value))}
+                            className="deal-money-slider"
+                            style={{ 
+                              background: dealMoneyOffer === 0 
+                                ? '#888' 
+                                : dealMoneyOffer > 0 
+                                  ? `linear-gradient(to right, #888 50%, #f44336 50%)` 
+                                  : `linear-gradient(to left, #888 50%, #4CAF50 50%)` 
+                            }}
+                          />
+                          <button 
+                            className="deal-slider-btn" 
+                            onClick={() => setDealMoneyOffer(prev => Math.min(playerMoney[effectiveProposer] || 0, prev + 100))}
+                            style={{ background: '#f44336' }}
+                          >
+                            +
+                          </button>
+                        </div>
+                        <div className="deal-slider-labels">
+                          <span style={{ color: '#4CAF50' }}>← Get</span>
+                          <span style={{ color: '#f44336' }}>Give →</span>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
 
               {/* Action Buttons */}
               <div className="modal-buttons">
@@ -6113,13 +6546,26 @@ function App() {
                <div style={{ fontFamily: 'Junegull, sans-serif', fontSize: '18px', color: '#4a2c18', marginBottom: '20px' }}>
                  You don't have any buildings to sell.
                </div>
-               <div className="modal-buttons" style={{ justifyContent: 'center' }}>
+               <div className="modal-buttons" style={{ justifyContent: 'center', gap: '10px' }}>
                  <button 
                     className="modal-btn cancel" 
-                    style={{ flex: 'none', minWidth: '120px' }} 
+                    style={{ flex: 'none', minWidth: '100px' }} 
                     onClick={() => setSellNoBuildingsModal(false)}
                  >
                    CLOSE
+                 </button>
+                 <button 
+                    className="modal-btn buy" 
+                    style={{ flex: 'none', minWidth: '150px', background: '#2e7d32' }} 
+                    onClick={() => {
+                      const target = (sellSellerIndex !== null && typeof sellSellerIndex === 'number')
+                        ? sellSellerIndex
+                        : (networkMode === 'online' && myPlayerIndex !== null ? myPlayerIndex : currentPlayer);
+                      setSellNoBuildingsModal(false);
+                      handleBank(target);
+                    }}
+                 >
+                   🏦 BANK LOAN
                  </button>
                </div>
             </div>
@@ -6140,37 +6586,45 @@ function App() {
                </div>
                
                {/* Compact Property List */}
-               <div style={{ 
-                 maxHeight: '100px', 
-                 overflowY: 'auto', 
-                 marginBottom: '8px',
-                 background: 'rgba(255,255,255,0.5)',
-                 borderRadius: '6px',
-                 padding: '4px',
-                 fontSize: '10px'
-               }}>
-                 {Object.keys(propertyOwnership).map(Number).filter(idx => propertyOwnership[idx] === currentPlayer && (sellPreviewLevels[idx] || 0) > 0).map(tileIdx => {
-                   const prop = RENT_DATA[tileIdx];
-                   const level = sellPreviewLevels[tileIdx] || 0;
-                   const levelText = level === 5 ? '🏨' : `🏠${level}`;
-                   return (
-                     <div 
-                       key={tileIdx} 
-                       style={{ 
-                         display: 'flex', 
-                         justifyContent: 'space-between', 
-                         padding: '2px 5px',
-                         borderBottom: '1px solid rgba(0,0,0,0.05)',
-                         cursor: 'pointer'
-                       }}
-                       onClick={() => handleSellTileTap(tileIdx)}
-                     >
-                       <span style={{ color: '#333' }}>{prop?.name || `Tile ${tileIdx}`}</span>
-                       <span style={{ color: '#F57C00', fontWeight: 'bold' }}>{levelText}</span>
-                     </div>
-                   );
-                 })}
-               </div>
+               {(() => {
+                 const seller = (sellSellerIndex !== null && typeof sellSellerIndex === 'number')
+                   ? sellSellerIndex
+                   : (networkMode === 'online' && myPlayerIndex !== null ? myPlayerIndex : currentPlayer);
+
+                 return (
+                   <div style={{ 
+                     maxHeight: '100px', 
+                     overflowY: 'auto', 
+                     marginBottom: '8px',
+                     background: 'rgba(255,255,255,0.5)',
+                     borderRadius: '6px',
+                     padding: '4px',
+                     fontSize: '10px'
+                   }}>
+                     {Object.keys(propertyOwnership).map(Number).filter(idx => propertyOwnership[idx] === seller && (sellPreviewLevels[idx] || 0) > 0).map(tileIdx => {
+                       const prop = RENT_DATA[tileIdx];
+                       const level = sellPreviewLevels[tileIdx] || 0;
+                       const levelText = level === 5 ? '🏨' : `🏠${level}`;
+                       return (
+                         <div 
+                           key={tileIdx} 
+                           style={{ 
+                             display: 'flex', 
+                             justifyContent: 'space-between', 
+                             padding: '2px 5px',
+                             borderBottom: '1px solid rgba(0,0,0,0.05)',
+                             cursor: 'pointer'
+                           }}
+                           onClick={() => handleSellTileTap(tileIdx)}
+                         >
+                           <span style={{ color: '#333' }}>{prop?.name || `Tile ${tileIdx}`}</span>
+                           <span style={{ color: '#F57C00', fontWeight: 'bold' }}>{levelText}</span>
+                         </div>
+                       );
+                     })}
+                   </div>
+                 );
+               })()}
                
                <div style={{ fontSize: '10px', color: '#5D4037', marginBottom: '8px' }}>
                  Tap property to sell (50% refund).
@@ -6459,7 +6913,7 @@ function App() {
       )}
 
       {/* Property War Modal */}
-      {showWarModal && (
+      {showWarModal && !showBankModal && !showDealModal && !showDealReviewModal && !showDealResultModal && !showSellModal && !sellNoBuildingsModal && (
         <div className="modal-overlay">
           <div className="buy-modal war-modal">
             {/* Header */}
@@ -6482,51 +6936,206 @@ function App() {
                   </div>
                   
                   {/* Player Join Buttons */}
-                  <div className="war-join-list" style={{ marginBottom: '15px' }}>
-                    {gamePlayers.map((player, idx) => (
-                      <div key={idx} style={{ 
-                        display: 'flex', 
-                        justifyContent: 'space-between', 
-                        alignItems: 'center',
-                        padding: '8px',
-                        marginBottom: '6px',
-                        background: warParticipants.includes(idx) ? '#e8f5e9' : '#f5f5f5',
-                        borderRadius: '6px',
-                        border: warParticipants.includes(idx) ? '2px solid #4CAF50' : '1px solid #ddd'
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <img src={player.avatar} alt={player.name} style={{ width: '24px', height: '24px', borderRadius: '50%' }} />
-                          <span style={{ fontWeight: 'bold' }}>{player.name}</span>
-                        </div>
-                        <div style={{ display: 'flex', gap: '8px' }}>
-                          {/* Join/Withdraw Button Logic */}
-                          {(networkMode !== 'online' || idx === myPlayerIndex) ? (
-                            !warParticipants.includes(idx) ? (
-                              <button 
-                                className="modal-btn buy" 
-                                style={{ padding: '6px 12px', fontSize: '12px' }}
-                                onClick={() => handleWarJoin(idx)}
-                                disabled={playerMoney[idx] < (warMode === 'A' ? 3000 : 2000)}
-                              >
-                                JOIN (${warMode === 'A' ? '3,000' : '2,000'})
-                              </button>
-                            ) : (
-                              <button 
-                                className="modal-btn cancel" 
-                                style={{ padding: '6px 12px', fontSize: '12px' }}
-                                onClick={() => handleWarWithdraw(idx)}
-                              >
-                                WITHDRAW
-                              </button>
-                            )
-                          ) : (
-                            <span style={{ fontSize: '12px', color: '#5D4037', fontWeight: 'bold', fontStyle: 'italic' }}>
-                              {warParticipants.includes(idx) ? 'Joined' : 'Thinking...'}
-                            </span>
+                  <div className="war-join-list" style={{ marginBottom: '12px' }}>
+                    {gamePlayers.map((player, idx) => {
+                      const fee = warMode === 'A' ? 3000 : 2000;
+                      const hasFunds = (playerMoney[idx] || 0) >= fee;
+                      const isJoined = warParticipants.includes(idx);
+                      const isLocalInteractive = networkMode !== 'online' || idx === myPlayerIndex;
+
+                      return (
+                        <div key={idx} style={{ 
+                          display: 'flex', 
+                          flexDirection: 'column',
+                          gap: '6px',
+                          padding: '8px 10px',
+                          marginBottom: '8px',
+                          background: isJoined ? '#e8f5e9' : '#f5f5f5',
+                          borderRadius: '8px',
+                          border: isJoined ? '2px solid #4CAF50' : '1px solid #ddd'
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <img src={player.avatar} alt={player.name} style={{ width: '26px', height: '26px', borderRadius: '50%' }} />
+                              <span style={{ fontWeight: 'bold', fontSize: '13px' }}>{player.name}</span>
+                              <span style={{ 
+                                fontSize: '12px', 
+                                fontWeight: 'bold', 
+                                color: hasFunds ? '#2e7d32' : '#c62828',
+                                marginLeft: '4px'
+                              }}>
+                                (${(playerMoney[idx] || 0).toLocaleString()})
+                              </span>
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              {/* Join/Withdraw Button Logic */}
+                              {isLocalInteractive ? (
+                                !isJoined ? (
+                                  <button 
+                                    className="modal-btn buy" 
+                                    style={{ padding: '6px 12px', fontSize: '12px' }}
+                                    onClick={() => handleWarJoin(idx)}
+                                    disabled={!hasFunds}
+                                  >
+                                    JOIN (${fee.toLocaleString()})
+                                  </button>
+                                ) : (
+                                  <button 
+                                    className="modal-btn cancel" 
+                                    style={{ padding: '6px 12px', fontSize: '12px' }}
+                                    onClick={() => handleWarWithdraw(idx)}
+                                  >
+                                    WITHDRAW
+                                  </button>
+                                )
+                              ) : (
+                                <span style={{ fontSize: '12px', color: '#5D4037', fontWeight: 'bold', fontStyle: 'italic' }}>
+                                  {isJoined ? 'Joined' : 'Thinking...'}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Quick Fund Options for unjoined player */}
+                          {isLocalInteractive && !isJoined && (
+                            <div style={{ 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              justifyContent: 'space-between',
+                              paddingTop: '6px',
+                              borderTop: '1px dashed #e0e0e0',
+                              fontSize: '11px',
+                              gap: '6px'
+                            }}>
+                              <span style={{ color: hasFunds ? '#555' : '#c62828', fontWeight: 'bold' }}>
+                                {!hasFunds ? '⚠️ Need Funds to Join:' : 'Raise Funds:'}
+                              </span>
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <button
+                                  type="button"
+                                  style={{
+                                    background: '#2e7d32',
+                                    color: '#fff',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    padding: '4px 8px',
+                                    fontSize: '11px',
+                                    cursor: 'pointer',
+                                    fontWeight: 'bold'
+                                  }}
+                                  onClick={() => handleBank(idx)}
+                                  title="Borrow from Bank"
+                                >
+                                  🏦 Loan
+                                </button>
+                                <button
+                                  type="button"
+                                  style={{
+                                    background: '#0288d1',
+                                    color: '#fff',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    padding: '4px 8px',
+                                    fontSize: '11px',
+                                    cursor: 'pointer',
+                                    fontWeight: 'bold'
+                                  }}
+                                  onClick={() => handleDeal(idx)}
+                                  title="Trade / Deal with others"
+                                >
+                                  🤝 Trade
+                                </button>
+                                <button
+                                  type="button"
+                                  style={{
+                                    background: '#f57c00',
+                                    color: '#fff',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    padding: '4px 8px',
+                                    fontSize: '11px',
+                                    cursor: 'pointer',
+                                    fontWeight: 'bold'
+                                  }}
+                                  onClick={() => handleSell(idx)}
+                                  title="Sell buildings for refund"
+                                >
+                                  🏷️ Sell
+                                </button>
+                              </div>
+                            </div>
                           )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
+                  </div>
+
+                  {/* General Fund Raising Toolbar */}
+                  <div style={{
+                    background: 'rgba(255, 152, 0, 0.08)',
+                    borderRadius: '8px',
+                    padding: '8px 12px',
+                    marginBottom: '15px',
+                    border: '1px dashed #FF9800',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: '6px'
+                  }}>
+                    <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#E65100' }}>
+                      💰 Raise Money:
+                    </span>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button 
+                        type="button"
+                        style={{
+                          background: '#2E7D32',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '4px',
+                          padding: '4px 10px',
+                          fontSize: '11px',
+                          fontWeight: 'bold',
+                          cursor: 'pointer'
+                        }}
+                        onClick={() => handleBank(networkMode === 'online' ? myPlayerIndex : currentPlayer)}
+                      >
+                        🏦 Take Loan
+                      </button>
+                      <button 
+                        type="button"
+                        style={{
+                          background: '#0288D1',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '4px',
+                          padding: '4px 10px',
+                          fontSize: '11px',
+                          fontWeight: 'bold',
+                          cursor: 'pointer'
+                        }}
+                        onClick={() => handleDeal(networkMode === 'online' ? myPlayerIndex : currentPlayer)}
+                      >
+                        🤝 Deal
+                      </button>
+                      <button 
+                        type="button"
+                        style={{
+                          background: '#F57C00',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '4px',
+                          padding: '4px 10px',
+                          fontSize: '11px',
+                          fontWeight: 'bold',
+                          cursor: 'pointer'
+                        }}
+                        onClick={() => handleSell(networkMode === 'online' ? myPlayerIndex : currentPlayer)}
+                      >
+                        🏷️ Sell
+                      </button>
+                    </div>
                   </div>
                   
                   <div className="modal-buttons" style={{ gap: '10px' }}>
@@ -7364,11 +7973,26 @@ function App() {
                     {bankruptPlayers[index] && <span>💀</span>}
                     {player.kicked && <span style={{ fontSize: '9px', background: '#e11d48', color: '#fff', padding: '1px 3px', borderRadius: '3px' }}>Kicked</span>}
                     {networkMode === 'online' && !player.connected && !player.kicked && (
-                      <span style={{ fontSize: '8px', background: '#ea580c', color: '#fff', padding: '1px 3px', borderRadius: '3px' }}>Offline</span>
+                      <span 
+                        className="offline-badge-live"
+                        style={{ 
+                          fontSize: '8px', 
+                          background: '#ea580c', 
+                          color: '#fff', 
+                          padding: '1px 4px', 
+                          borderRadius: '3px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '2px',
+                          fontWeight: 'bold'
+                        }}
+                      >
+                        ⚠️ Offline {disconnectCountdowns[index]?.secondsLeft !== undefined ? `(${disconnectCountdowns[index].secondsLeft}s)` : ''}
+                      </span>
                     )}
                   </div>
                   {/* Host Kick Option for Disconnected Players */}
-                  {networkMode === 'online' && myPlayerIndex === 0 && index !== 0 && !player.kicked && !player.connected && (
+                  {networkMode === 'online' && (gamePlayers[myPlayerIndex]?.isHost || myPlayerIndex === 0) && index !== myPlayerIndex && !player.kicked && !player.connected && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();

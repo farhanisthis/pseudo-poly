@@ -515,3 +515,18 @@
      overflow-y: auto;
   }
 }
+
+/* Offline Status and Reconnection Styles */
+@keyframes pulse-offline {
+  0% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.96); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+.offline-badge-live {
+  animation: pulse-offline 1.5s infinite ease-in-out;
+}
+
+.offline-turn-banner {
+  animation: pulse-offline 2s infinite ease-in-out;
+}

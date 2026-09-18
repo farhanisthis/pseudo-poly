@@ -185,13 +185,16 @@ function handleSessionReconnect(socket, room, playerIndex) {
 }
 
 // Helper: Strict Turn & Player State Validation
-function validatePlayerTurn(room, playerIndex, action) {
+function validatePlayerTurn(room, playerIndex, action, payload) {
   if (!room || !room.gameState) return false;
   if (playerIndex === undefined || playerIndex === null) return false;
   
   const player = room.players[playerIndex];
   if (!player || player.kicked || player.forfeited) return false;
   if (room.gameState.bankruptPlayers && room.gameState.bankruptPlayers[playerIndex]) return false;
+
+  // Block insecure / deprecated actions
+  if (action === 'update_state') return false;
 
   // Actions that require the game to be actively playing
   const gameplayActions = [
@@ -230,6 +233,55 @@ function validatePlayerTurn(room, playerIndex, action) {
     if (room.gameState.isRolling || room.gameState.isProcessingTurn) {
       return false;
     }
+  }
+
+  // Special checks for buying property
+  if (action === 'buy_property') {
+    const tileIndex = payload?.tileIndex;
+    if (tileIndex === undefined) return false;
+    const tIdx = Number(tileIndex);
+    if (!RENT_DATA[tIdx]) return false;
+    if (room.gameState.playerPositions[playerIndex] !== tIdx) return false;
+    if (room.gameState.propertyOwnership[tIdx] !== undefined) return false;
+  }
+
+  // Special checks for building
+  if (action === 'build_complete') {
+    const newLevels = payload?.propertyLevels;
+    if (!newLevels || typeof newLevels !== 'object') return false;
+    const oldLevels = room.gameState.propertyLevels || {};
+    let hasUpgrade = false;
+    for (const tileStr of Object.keys(newLevels)) {
+      const tileIdx = Number(tileStr);
+      const oldL = oldLevels[tileIdx] || 0;
+      const newL = Number(newLevels[tileIdx]);
+      if (newL === oldL) continue;
+      if (isNaN(newL) || newL < 0 || newL > 5 || !Number.isInteger(newL) || newL <= oldL) return false;
+      if (Number(room.gameState.propertyOwnership[tileIdx]) !== playerIndex) return false;
+      if (!hasMonopoly(room, tileIdx, playerIndex)) return false;
+      hasUpgrade = true;
+    }
+    if (!hasUpgrade) return false;
+  }
+
+  // Special checks for bail & jail skip
+  if (action === 'pay_bail' || action === 'jail_skip') {
+    if (!room.gameState.jailStatus || !room.gameState.jailStatus[playerIndex] || room.gameState.jailStatus[playerIndex] <= 0) {
+      return false;
+    }
+  }
+
+  // Special checks for loan repayment
+  if (action === 'repay_loan') {
+    if (!room.gameState.playerLoans || !room.gameState.playerLoans[playerIndex]) {
+      return false;
+    }
+  }
+
+  // Special checks for train travel
+  if (action === 'train_travel') {
+    const currentPos = room.gameState.playerPositions[playerIndex];
+    if (!TRAIN_TILES.includes(currentPos)) return false;
   }
 
   return true;
@@ -458,7 +510,7 @@ io.on('connection', (socket) => {
     console.log(`[SERVER] Current socket rooms:`, Array.from(socket.rooms));
     
     // Validate it's this player's turn and action is permitted
-    if (!validatePlayerTurn(room, playerIndex, action)) {
+    if (!validatePlayerTurn(room, playerIndex, action, payload)) {
       console.log(`[SERVER] Action ${action} rejected for P${playerIndex} (not permitted or not turn)`);
       socket.emit('error', { message: 'Action not allowed or not your turn!' });
       return;
@@ -1652,7 +1704,12 @@ function handleTrainTravel(room, playerIndex, payload) {
     return;
   }
   
-  const travelCost = 100;
+  const sortedTrains = [...TRAIN_TILES].sort((a, b) => a - b);
+  const srcIdx = sortedTrains.indexOf(currentPos);
+  const tgtIdx = sortedTrains.indexOf(target);
+  const stationDist = (tgtIdx - srcIdx + 4) % 4;
+  const travelCost = (payload && payload.cost !== undefined) ? Number(payload.cost) : (stationDist * 50);
+
   if (room.gameState.playerMoney[playerIndex] < travelCost) return;
   
   room.gameState.playerMoney[playerIndex] -= travelCost;

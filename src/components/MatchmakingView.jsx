@@ -216,12 +216,12 @@ export default function MatchmakingView({
     return {
       slotIndex: index,
       player,
-      isHost: index === 0,
+      isHost: player ? player.isHost === true : index === 0,
       isMe: index === myPlayerIndex,
     };
   });
 
-  const isHost = myPlayerIndex === 0;
+  const isHost = (connectedPlayers[myPlayerIndex]?.isHost || myPlayerIndex === 0);
   const canStartGame = connectedPlayers.length >= 2;
   const activeHaloColor = AVATAR_COLORS[myIdentity.avatar] || '#ffd700';
 
@@ -692,9 +692,15 @@ export default function MatchmakingView({
                         {player.name}
                       </div>
 
-                      <span className={`mm-slot-badge ${isSlotHost ? 'host' : 'ready'}`}>
-                        {isSlotHost ? (isMe ? 'YOU (HOST)' : 'HOST') : (isMe ? 'YOU' : 'READY')}
-                      </span>
+                      {!player.connected ? (
+                        <span className="mm-slot-badge disconnected" style={{ background: '#ea580c', color: '#fff' }}>
+                          OFFLINE
+                        </span>
+                      ) : (
+                        <span className={`mm-slot-badge ${isSlotHost ? 'host' : 'ready'}`}>
+                          {isSlotHost ? (isMe ? 'YOU (HOST)' : 'HOST') : (isMe ? 'YOU' : 'READY')}
+                        </span>
+                      )}
                     </div>
                   );
                 }
