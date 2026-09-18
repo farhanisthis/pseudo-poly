@@ -7,6 +7,20 @@ import { RENT_DATA, TRAIN_RENT, TRAIN_TILES, COLOR_GROUPS } from './gameData.js'
 const app = express();
 app.use(cors());
 
+// Health check endpoints for cloud deployment and connection verification
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    game: 'PseudoPoly Multiplayer Server',
+    activeRooms: Object.keys(rooms).length,
+    uptimeSeconds: Math.floor(process.uptime())
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy' });
+});
+
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
@@ -1694,6 +1708,6 @@ function handleAuctionComplete(room, payload) {
 }
 
 const PORT = process.env.PORT || 3001;
-httpServer.listen(PORT, () => {
-  console.log(`Socket.IO server running on port ${PORT}`);
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`[PseudoPoly Server] Running on http://0.0.0.0:${PORT} (ready for Hotspot & Online connections)`);
 });

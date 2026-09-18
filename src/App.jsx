@@ -405,52 +405,86 @@ function App() {
     let formatted = (raw || '').trim();
     if (!formatted) return '';
     if (!formatted.startsWith('http://') && !formatted.startsWith('https://')) {
-      formatted = 'http://' + formatted;
+      if (
+        formatted.includes('.onrender.com') ||
+        formatted.includes('.railway.app') ||
+        formatted.includes('.herokuapp.com') ||
+        formatted.includes('.repl.co') ||
+        formatted.includes('.loca.lt') ||
+        formatted.includes('.ngrok')
+      ) {
+        formatted = 'https://' + formatted;
+      } else {
+        formatted = 'http://' + formatted;
+      }
     }
-    // Auto-append port :3001 if no port specified
-    const match = formatted.match(/^(https?:\/\/[^/:]+)(\/.*)?$/);
-    if (match && !formatted.startsWith('https://')) {
-      formatted = `${match[1]}:3001${match[2] || ''}`;
+    // Auto-append port :3001 only for HTTP IP addresses or localhost
+    if (formatted.startsWith('http://')) {
+      const match = formatted.match(/^(https?:\/\/[^/:]+)(\/.*)?$/);
+      if (match) {
+        const host = match[1].replace(/^https?:\/\//, '');
+        if (/^(\d{1,3}\.){3}\d{1,3}$/.test(host) || host === 'localhost') {
+          formatted = `${match[1]}:3001${match[2] || ''}`;
+        }
+      }
     }
-    return formatted;
+    return formatted.replace(/\/+$/, '');
   };
 
-  const getInitialServerUrl = () => {
+  const getInitialHotspotUrl = () => {
     try {
-      const stored = localStorage.getItem('pseudopoly_server_url');
+      const stored = localStorage.getItem('pseudopoly_hotspot_url');
       if (stored && !stored.includes('localhost') && !stored.includes('127.0.0.1')) {
         return formatServerUrl(stored);
       }
-      if (import.meta.env.VITE_SERVER_URL) {
-        return formatServerUrl(import.meta.env.VITE_SERVER_URL);
-      }
-      // If loaded in a browser on a phone or another device, use the actual host IP/domain!
+      // If loaded in a browser on another device on LAN, use hostname if not localhost
       if (typeof window !== 'undefined' && window.location && window.location.hostname) {
         const hostname = window.location.hostname;
         if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
-          const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-          return `${protocol}//${hostname}:3001`;
+          return `http://${hostname}:3001`;
         }
       }
-      // Default for native Android APK and Wi-Fi multiplayer on this network
-      return 'http://192.168.1.43:3001';
+      // Default for Android Hotspot Gateway (Mini Militia style tethering)
+      return 'http://192.168.43.1:3001';
     } catch {
-      return 'http://192.168.1.43:3001';
+      return 'http://192.168.43.1:3001';
     }
   };
 
-  const [serverUrl, setServerUrl] = useState(getInitialServerUrl);
+  const getInitialOnlineUrl = () => {
+    try {
+      const stored = localStorage.getItem('pseudopoly_online_url');
+      if (stored) return formatServerUrl(stored);
+      if (import.meta.env.VITE_SERVER_URL) return formatServerUrl(import.meta.env.VITE_SERVER_URL);
+    } catch {}
+    return 'https://pseudopoly-server.onrender.com';
+  };
+
+  const [networkType, setNetworkType] = useState('wifi'); // 'wifi' or 'online'
+  const [hotspotServerUrl, setHotspotServerUrl] = useState(getInitialHotspotUrl);
+  const [onlineServerUrl, setOnlineServerUrl] = useState(getInitialOnlineUrl);
+
+  const serverUrl = networkType === 'online' ? onlineServerUrl : hotspotServerUrl;
   const [socketConnected, setSocketConnected] = useState(false);
+  const isConnectingRef = useRef(false);
 
   const updateServerUrl = (newUrl) => {
     const formatted = formatServerUrl(newUrl);
-    setServerUrl(formatted);
-    try { localStorage.setItem('pseudopoly_server_url', formatted); } catch {}
+    if (networkType === 'online') {
+      setOnlineServerUrl(formatted);
+      try { localStorage.setItem('pseudopoly_online_url', formatted); } catch {}
+    } else {
+      setHotspotServerUrl(formatted);
+      try { localStorage.setItem('pseudopoly_hotspot_url', formatted); } catch {}
+    }
     if (socketRef.current) {
       socketRef.current.disconnect();
       socketRef.current = null;
     }
     setSocketConnected(false);
+    setTimeout(() => {
+      connectSocket(formatted);
+    }, 150);
   };
 
   // Connect to Socket.IO server and set up event handlers
@@ -485,7 +519,8 @@ function App() {
   }, []);
 
   // Connect to Socket.IO server and set up event handlers
-  const connectSocket = () => {
+  const connectSocket = (explicitUrl = null) => {
+    const targetUrl = explicitUrl || serverUrl;
     if (socketRef.current && socketRef.current.connected) return socketRef.current;
     if (socketRef.current) {
       if (!socketRef.current.connected) {
@@ -494,12 +529,11 @@ function App() {
       return socketRef.current;
     }
     
-    const targetUrl = serverUrl || getInitialServerUrl();
     console.log('[connectSocket] Connecting to server at:', targetUrl);
     const socket = io(targetUrl, {
-      reconnectionAttempts: 10,
+      reconnectionAttempts: 5,
       reconnectionDelay: 1000,
-      timeout: 10000,
+      timeout: 6000,
       transports: ['websocket', 'polling']
     });
     socketRef.current = socket;
@@ -507,6 +541,7 @@ function App() {
     socket.on('connect', () => {
       console.log('Connected to server:', socket.id);
       setSocketConnected(true);
+      isConnectingRef.current = false;
     });
 
     socket.on('disconnect', () => {
@@ -516,6 +551,10 @@ function App() {
     socket.on('connect_error', (err) => {
       console.warn('Socket connection error:', err?.message || err);
       setSocketConnected(false);
+      if (isConnectingRef.current) {
+        isConnectingRef.current = false;
+        showToast(`⚠️ Cannot connect to ${targetUrl}. Please verify host.`);
+      }
     });
     
     socket.on('room_created', ({ roomCode: code, playerIndex, gameState, players }) => {
@@ -753,7 +792,7 @@ function App() {
     if (gameStage === 'online_menu' || gameStage === 'mode_select') {
       connectSocket();
     }
-  }, [gameStage, serverUrl]);
+  }, [gameStage, serverUrl, networkType]);
 
   // Track last known positions for animation (independent of ref which can be stale)
   const lastKnownPositionsRef = useRef([0, 0, 0, 0]);
@@ -1046,15 +1085,31 @@ function App() {
         name: myIdentity.name,
         avatar: myIdentity.avatar
       });
-    } else {
-      showToast(`Connecting to game host (${serverUrl})...`);
-      socket.once('connect', () => {
-        socket.emit('create_room', {
-          name: myIdentity.name,
-          avatar: myIdentity.avatar
-        });
-      });
+      return;
     }
+
+    if (isConnectingRef.current) return;
+    isConnectingRef.current = true;
+    showToast(`Connecting to ${networkType === 'online' ? 'Online Server' : 'Hotspot Host'} (${serverUrl})...`);
+
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      isConnectingRef.current = false;
+      showToast(`⚠️ Connection timed out. Cannot reach ${serverUrl}. Check hotspot or server status.`);
+    }, 6000);
+
+    const onConnect = () => {
+      if (timedOut) return;
+      clearTimeout(timeoutId);
+      isConnectingRef.current = false;
+      socket.emit('create_room', {
+        name: myIdentity.name,
+        avatar: myIdentity.avatar
+      });
+    };
+
+    socket.once('connect', onConnect);
   };
 
   // Join an existing room
@@ -1074,16 +1129,32 @@ function App() {
         name: myIdentity.name,
         avatar: myIdentity.avatar
       });
-    } else {
-      showToast(`Connecting to game host (${serverUrl})...`);
-      socket.once('connect', () => {
-        socket.emit('join_room', {
-          roomCode: cleanCode,
-          name: myIdentity.name,
-          avatar: myIdentity.avatar
-        });
-      });
+      return;
     }
+
+    if (isConnectingRef.current) return;
+    isConnectingRef.current = true;
+    showToast(`Connecting to ${networkType === 'online' ? 'Online Server' : 'Hotspot Host'} (${serverUrl})...`);
+
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      isConnectingRef.current = false;
+      showToast(`⚠️ Connection timed out. Cannot reach ${serverUrl}. Check room code and server.`);
+    }, 6000);
+
+    const onConnect = () => {
+      if (timedOut) return;
+      clearTimeout(timeoutId);
+      isConnectingRef.current = false;
+      socket.emit('join_room', {
+        roomCode: cleanCode,
+        name: myIdentity.name,
+        avatar: myIdentity.avatar
+      });
+    };
+
+    socket.once('connect', onConnect);
   };
 
   // Start the game (Host only)
@@ -4988,6 +5059,10 @@ function App() {
           serverUrl={serverUrl}
           updateServerUrl={updateServerUrl}
           socketConnected={socketConnected}
+          networkType={networkType}
+          setNetworkType={setNetworkType}
+          hotspotServerUrl={hotspotServerUrl}
+          onlineServerUrl={onlineServerUrl}
         />
       )}
 

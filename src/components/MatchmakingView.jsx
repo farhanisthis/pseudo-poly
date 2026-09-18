@@ -131,12 +131,15 @@ export default function MatchmakingView({
   serverUrl,
   updateServerUrl,
   socketConnected,
+  networkType = 'wifi',
+  setNetworkType = () => {},
+  hotspotServerUrl,
+  onlineServerUrl,
 }) {
   const [onlineTab, setOnlineTab] = useState('host');
   const [isCopied, setIsCopied] = useState(false);
   const [showServerModal, setShowServerModal] = useState(false);
   const [ipInput, setIpInput] = useState(serverUrl || '');
-  const [networkType, setNetworkType] = useState('wifi'); // 'wifi' or 'online'
   const pinInputRef = useRef(null);
 
   useEffect(() => {
@@ -296,7 +299,7 @@ export default function MatchmakingView({
                 <div className="mm-mode-arrow">→</div>
               </div>
 
-              {/* Local Wi-Fi Multiplayer */}
+              {/* Local Wi-Fi / Hotspot Multiplayer */}
               <div 
                 className="mm-mode-card wifi"
                 onClick={() => {
@@ -310,10 +313,10 @@ export default function MatchmakingView({
                 </div>
                 <div className="mm-mode-info">
                   <span className="mm-mode-badge" style={{ background: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24' }}>
-                    LOCAL WI-FI
+                    HOTSPOT / LAN
                   </span>
-                  <div className="mm-mode-title">Wi-Fi Multiplayer</div>
-                  <p className="mm-mode-desc">Play with friends on the same Wi-Fi or mobile hotspot.</p>
+                  <div className="mm-mode-title">Hotspot & Local Wi-Fi</div>
+                  <p className="mm-mode-desc">Mini Militia style: Host turns on phone hotspot, friends connect to host's Wi-Fi.</p>
                 </div>
                 <div className="mm-mode-arrow">→</div>
               </div>
@@ -332,8 +335,8 @@ export default function MatchmakingView({
                 </div>
                 <div className="mm-mode-info">
                   <span className="mm-mode-badge">ONLINE ROOMS</span>
-                  <div className="mm-mode-title">Play with Friends</div>
-                  <p className="mm-mode-desc">Create or join private rooms with a 4-digit numeric code.</p>
+                  <div className="mm-mode-title">Play with Friends Online</div>
+                  <p className="mm-mode-desc">Create or join private rooms over the Internet with a 4-digit numeric code.</p>
                 </div>
                 <div className="mm-mode-arrow">→</div>
               </div>
@@ -355,41 +358,51 @@ export default function MatchmakingView({
                 ←
               </button>
               <h2 className="mm-header-title">
-                {networkType === 'wifi' ? 'LOCAL WI-FI ROOMS' : 'ONLINE ROOMS'}
+                {networkType === 'wifi' ? 'HOTSPOT & WI-FI ROOMS' : 'ONLINE MULTIPLAYER'}
               </h2>
               <div className="mm-header-spacer" />
             </div>
 
-            {/* Wi-Fi Host IP Status & Config Bar */}
+            {/* Wi-Fi / Server Status & Config Bar */}
             <div className="mm-wifi-bar">
               <div className="mm-wifi-status">
                 <span className={`mm-wifi-dot ${socketConnected ? 'connected' : 'disconnected'}`} />
                 <span className="mm-wifi-label">
-                  {socketConnected ? 'Host Connected:' : 'Host Server:'}
+                  {networkType === 'online'
+                    ? (socketConnected ? 'Cloud Online:' : 'Cloud Server:')
+                    : (socketConnected ? 'Host Connected:' : 'Host Address:')
+                  }
                 </span>
-                <span className="mm-wifi-host">{serverUrl || 'localhost:3001'}</span>
+                <span className="mm-wifi-host">
+                  {serverUrl || (networkType === 'online' ? 'Cloud Server' : '192.168.43.1:3001')}
+                </span>
               </div>
               <button 
                 className="mm-wifi-cfg-btn"
                 onClick={() => setShowServerModal(!showServerModal)}
               >
                 <SettingsIcon size={14} />
-                <span>{showServerModal ? 'Close' : 'Configure IP'}</span>
+                <span>{showServerModal ? 'Close' : (networkType === 'online' ? 'Server URL' : 'Configure IP')}</span>
               </button>
             </div>
 
             {/* Inline Host IP Config Card */}
             {showServerModal && (
               <div className="mm-wifi-card">
-                <div className="mm-wifi-card-title">Wi-Fi Host Address</div>
+                <div className="mm-wifi-card-title">
+                  {networkType === 'wifi' ? '📱 Hotspot & Local Wi-Fi Host' : '☁️ Cloud Game Server'}
+                </div>
                 <p className="mm-wifi-card-desc">
-                  Enter the IP address of the device hosting the game (e.g. computer on this Wi-Fi running the server).
+                  {networkType === 'wifi'
+                    ? "Mini Militia Hotspot: Host enables Mobile Hotspot. Friends connect to host's Wi-Fi. Default Host IP is 192.168.43.1:3001. If running server on PC, enter PC's Wi-Fi IP."
+                    : "Enter your hosted cloud backend URL (e.g. on Render or Railway). Once connected, players anywhere with internet can join via 4-digit code."
+                  }
                 </p>
                 <div className="mm-wifi-input-row">
                   <input
                     type="text"
                     className="mm-wifi-input"
-                    placeholder="e.g. 192.168.1.43:3001"
+                    placeholder={networkType === 'wifi' ? "e.g. 192.168.43.1:3001" : "e.g. https://pseudopoly-server.onrender.com"}
                     value={ipInput}
                     onChange={(e) => setIpInput(e.target.value)}
                   />
@@ -399,28 +412,35 @@ export default function MatchmakingView({
                 </div>
                 <div className="mm-wifi-presets">
                   <span className="mm-wifi-preset-label">Presets:</span>
-                  <button 
-                    type="button"
-                    className="mm-wifi-preset-chip" 
-                    onClick={() => { setIpInput('192.168.1.43:3001'); updateServerUrl('192.168.1.43:3001'); setShowServerModal(false); }}
-                  >
-                    192.168.1.43:3001 (Wi-Fi LAN)
-                  </button>
-                  <button 
-                    type="button"
-                    className="mm-wifi-preset-chip" 
-                    style={{ background: 'rgba(76, 175, 80, 0.25)', borderColor: '#4CAF50' }}
-                    onClick={() => { setIpInput('https://crazy-memes-tap.loca.lt'); updateServerUrl('https://crazy-memes-tap.loca.lt'); setShowServerModal(false); }}
-                  >
-                    🌐 Online Tunnel
-                  </button>
-                  <button 
-                    type="button"
-                    className="mm-wifi-preset-chip" 
-                    onClick={() => { setIpInput('localhost:3001'); updateServerUrl('localhost:3001'); setShowServerModal(false); }}
-                  >
-                    localhost:3001
-                  </button>
+                  {networkType === 'wifi' ? (
+                    <>
+                      <button 
+                        type="button"
+                        className="mm-wifi-preset-chip" 
+                        onClick={() => { setIpInput('192.168.43.1:3001'); updateServerUrl('192.168.43.1:3001'); setShowServerModal(false); }}
+                      >
+                        📱 192.168.43.1:3001 (Android Hotspot)
+                      </button>
+                      <button 
+                        type="button"
+                        className="mm-wifi-preset-chip" 
+                        onClick={() => { setIpInput('localhost:3001'); updateServerUrl('localhost:3001'); setShowServerModal(false); }}
+                      >
+                        💻 localhost:3001
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button 
+                        type="button"
+                        className="mm-wifi-preset-chip" 
+                        style={{ background: 'rgba(76, 175, 80, 0.25)', borderColor: '#4CAF50' }}
+                        onClick={() => { setIpInput('https://pseudopoly-server.onrender.com'); updateServerUrl('https://pseudopoly-server.onrender.com'); setShowServerModal(false); }}
+                      >
+                        ☁️ Default Render Server
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             )}
