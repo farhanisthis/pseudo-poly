@@ -435,9 +435,9 @@ export default function MatchmakingView({
                         type="button"
                         className="mm-wifi-preset-chip" 
                         style={{ background: 'rgba(76, 175, 80, 0.25)', borderColor: '#4CAF50' }}
-                        onClick={() => { setIpInput('https://pseudopoly-server.onrender.com'); updateServerUrl('https://pseudopoly-server.onrender.com'); setShowServerModal(false); }}
+                        onClick={() => { setIpInput('https://pseudo-poly.onrender.com'); updateServerUrl('https://pseudo-poly.onrender.com'); setShowServerModal(false); }}
                       >
-                        ☁️ Default Render Server
+                        ☁️ pseudo-poly.onrender.com
                       </button>
                     </>
                   )}

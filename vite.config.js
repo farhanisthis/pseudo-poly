@@ -7,5 +7,10 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    allowedHosts: true, // Allow all hosts including pseudo-poly.onrender.com
+  },
+  preview: {
+    host: true,
+    allowedHosts: true, // Allow all hosts for preview/production
   },
 })

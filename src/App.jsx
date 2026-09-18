@@ -457,7 +457,7 @@ function App() {
       if (stored) return formatServerUrl(stored);
       if (import.meta.env.VITE_SERVER_URL) return formatServerUrl(import.meta.env.VITE_SERVER_URL);
     } catch {}
-    return 'https://pseudopoly-server.onrender.com';
+    return 'https://pseudo-poly.onrender.com';
   };
 
   const [networkType, setNetworkType] = useState('wifi'); // 'wifi' or 'online'
