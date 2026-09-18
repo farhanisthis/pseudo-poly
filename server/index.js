@@ -214,7 +214,10 @@ function validatePlayerTurn(room, playerIndex, action) {
   ];
 
   if (turnRestrictedActions.includes(action)) {
-    if (room.gameState.currentPlayer !== playerIndex) {
+    const isWarJoinAction = ['take_loan', 'repay_loan', 'sell_buildings'].includes(action) &&
+      room.gameState.warState && room.gameState.warState.phase === 'join';
+
+    if (room.gameState.currentPlayer !== playerIndex && !isWarJoinAction) {
       return false;
     }
   }
@@ -282,74 +285,69 @@ io.on('connection', (socket) => {
       return;
     }
     
-    // --- RECONNECTION CHECK: exact name+avatar match ---
-    const exactMatchIndex = room.players.findIndex(p => p.name === name && p.avatar === avatar);
+    // --- RECONNECTION CHECK: only reconnect if an existing player was disconnected ---
+    const disconnectedIndex = room.players.findIndex(p => !p.connected && p.name === name && p.avatar === avatar);
 
-    if (exactMatchIndex !== -1) {
-      const existingPlayer = room.players[exactMatchIndex];
+    if (disconnectedIndex !== -1) {
+      const existingPlayer = room.players[disconnectedIndex];
 
-      if (!existingPlayer.connected) {
-        // --- RECONNECTION LOGIC ---
-        console.log(`[SERVER] Player ${name} reconnecting to ${cleanRoomCode}`);
+      // --- RECONNECTION LOGIC ---
+      console.log(`[SERVER] Player ${name} reconnecting to ${cleanRoomCode}`);
 
-        existingPlayer.socketId = socket.id;
-        existingPlayer.connected = true;
-        existingPlayer.canBeKicked = false;
-        existingPlayer.disconnectedAt = null;
-        existingPlayer.reconnectDeadline = null;
+      existingPlayer.socketId = socket.id;
+      existingPlayer.connected = true;
+      existingPlayer.canBeKicked = false;
+      existingPlayer.disconnectedAt = null;
+      existingPlayer.reconnectDeadline = null;
 
-        socket.join(cleanRoomCode);
-        socket.roomCode = cleanRoomCode;
-        socket.playerIndex = exactMatchIndex;
+      socket.join(cleanRoomCode);
+      socket.roomCode = cleanRoomCode;
+      socket.playerIndex = disconnectedIndex;
 
-        if (existingPlayer.isHost && room.hostDisconnectTimer) {
-          console.log(`[SERVER] Host reconnected! Cancelling destruction timer.`);
-          clearTimeout(room.hostDisconnectTimer);
-          room.hostDisconnectTimer = null;
-        }
-
-        if (room.playerDisconnectTimers && room.playerDisconnectTimers[exactMatchIndex]) {
-          clearTimeout(room.playerDisconnectTimers[exactMatchIndex]);
-          delete room.playerDisconnectTimers[exactMatchIndex];
-        }
-
-        if (room.warAutoRollTimer) {
-          clearTimeout(room.warAutoRollTimer);
-          room.warAutoRollTimer = null;
-        }
-        if (room.auctionAutoFoldTimers && room.auctionAutoFoldTimers[exactMatchIndex]) {
-          clearTimeout(room.auctionAutoFoldTimers[exactMatchIndex]);
-          delete room.auctionAutoFoldTimers[exactMatchIndex];
-        }
-
-        if (room.gameState && room.gameState.history) {
-          room.gameState.history.unshift(`✅ ${existingPlayer.name} reconnected!`);
-        }
-
-        const isPlaying = room.gameState && room.gameState.gameStage === 'playing';
-
-        socket.emit('session_reconnected', {
-          roomCode: cleanRoomCode,
-          playerIndex: exactMatchIndex,
-          sessionToken: existingPlayer.sessionToken,
-          gameState: room.gameState,
-          players: room.players,
-          gameStage: isPlaying ? 'playing' : 'lobby'
-        });
-
-        broadcastState(room);
-        io.to(cleanRoomCode).emit('players_updated', { players: room.players });
-        io.to(cleanRoomCode).emit('player_reconnected', {
-          playerIndex: exactMatchIndex,
-          playerName: existingPlayer.name
-        });
-        io.to(cleanRoomCode).emit('toast', { message: `✅ ${existingPlayer.name} reconnected!` });
-        return;
-      } else {
-        // Already fully connected with the exact same identity
-        socket.emit('error', { message: 'You are already connected to this room!' });
-        return;
+      if (existingPlayer.isHost && room.hostDisconnectTimer) {
+        console.log(`[SERVER] Host reconnected! Cancelling destruction timer.`);
+        clearTimeout(room.hostDisconnectTimer);
+        room.hostDisconnectTimer = null;
       }
+
+      if (room.playerDisconnectTimers && room.playerDisconnectTimers[disconnectedIndex]) {
+        console.log(`[SERVER] Clearing disconnect timer for player ${existingPlayer.name}`);
+        clearTimeout(room.playerDisconnectTimers[disconnectedIndex]);
+        delete room.playerDisconnectTimers[disconnectedIndex];
+      }
+
+      if (room.warAutoRollTimer) {
+        clearTimeout(room.warAutoRollTimer);
+        room.warAutoRollTimer = null;
+      }
+      if (room.auctionAutoFoldTimers && room.auctionAutoFoldTimers[disconnectedIndex]) {
+        clearTimeout(room.auctionAutoFoldTimers[disconnectedIndex]);
+        delete room.auctionAutoFoldTimers[disconnectedIndex];
+      }
+
+      if (room.gameState && room.gameState.history) {
+        room.gameState.history.unshift(`✅ ${existingPlayer.name} reconnected!`);
+      }
+
+      const isPlaying = room.gameState && room.gameState.gameStage === 'playing';
+
+      socket.emit('session_reconnected', {
+        roomCode: cleanRoomCode,
+        playerIndex: disconnectedIndex,
+        sessionToken: existingPlayer.sessionToken,
+        gameState: room.gameState,
+        players: room.players,
+        gameStage: isPlaying ? 'playing' : 'lobby'
+      });
+
+      broadcastState(room);
+      io.to(cleanRoomCode).emit('players_updated', { players: room.players });
+      io.to(cleanRoomCode).emit('player_reconnected', {
+        playerIndex: disconnectedIndex,
+        playerName: existingPlayer.name
+      });
+      io.to(cleanRoomCode).emit('toast', { message: `✅ ${existingPlayer.name} reconnected!` });
+      return;
     }
 
     // --- AUTO-RESOLVE name conflict: append number suffix if name is taken ---
@@ -576,6 +574,22 @@ io.on('connection', (socket) => {
             io.to(room.roomCode).emit('players_updated', { players: room.players });
             io.to(room.roomCode).emit('toast', { message: `👢 ${targetPlayer.name} was kicked by the host.` });
             checkForWinner(room);
+          }
+        }
+        break;
+      case 'skip_offline_turn':
+        const hostPlayer = room.players[playerIndex];
+        if (hostPlayer && hostPlayer.isHost && payload && payload.targetIndex !== undefined) {
+          const targetP = room.players[payload.targetIndex];
+          if (targetP && !targetP.connected && room.gameState.currentPlayer === payload.targetIndex) {
+            console.log(`[SERVER] Host force skipped turn for offline player ${targetP.name} (P${payload.targetIndex})`);
+            room.gameState.history.unshift(`⏭️ Host skipped turn for offline player ${targetP.name}.`);
+            room.gameState.modalState = { type: 'NONE', status: 'IDLE', payload: {} };
+            room.gameState.hoppingPlayer = null;
+            room.gameState.isProcessingTurn = false;
+            handleEndTurn(room);
+            broadcastState(room);
+            io.to(room.roomCode).emit('toast', { message: `⏭️ Turn skipped for ${targetP.name}` });
           }
         }
         break;
