@@ -2845,6 +2845,25 @@ function App() {
     }
   }, [robStatus]);
 
+  useEffect(() => {
+    let timer;
+    if (robStatus === 'processing') {
+      setRobProgress(0);
+      const duration = 2000;
+      const interval = 50;
+      const steps = duration / interval;
+      let currentStep = 0;
+      
+      timer = setInterval(() => {
+        currentStep++;
+        const progress = Math.min((currentStep / steps) * 100, 95);
+        setRobProgress(progress);
+        if (currentStep >= steps) clearInterval(timer);
+      }, interval);
+    }
+    return () => clearInterval(timer);
+  }, [robStatus]);
+
   // Handle Rob Bank Attempt
   const handleRobBankAttempt = () => {
     // Online Mode: Let server authorize and process robbery
@@ -2856,7 +2875,7 @@ function App() {
     setRobStatus('processing');
     setRobProgress(0);
     
-    // Animate progress bar
+    // Offline mode: Animate progress bar locally and calculate result
     const duration = 2000; // 2 seconds
     const interval = 50;
     const steps = duration / interval;
@@ -3477,7 +3496,8 @@ function App() {
     if (!validateTurn()) return;
     
     // Check if player has any monopoly properties
-    const monopolyTiles = getMonopolyTiles(currentPlayer);
+    const activeBuilder = (networkMode === 'online' && myPlayerIndex !== null) ? myPlayerIndex : currentPlayer;
+    const monopolyTiles = getMonopolyTiles(activeBuilder);
     
     if (monopolyTiles.length === 0) {
       // No monopolies - show small modal
@@ -3495,7 +3515,8 @@ function App() {
   const handleBuildTileTap = (tileIndex) => {
     if (!buildMode) return;
     
-    const monopolyTiles = getMonopolyTiles(currentPlayer);
+    const activeBuilder = (networkMode === 'online' && myPlayerIndex !== null) ? myPlayerIndex : currentPlayer;
+    const monopolyTiles = getMonopolyTiles(activeBuilder);
     if (!monopolyTiles.includes(tileIndex)) {
       // Not a monopoly property - ignore
       return;
@@ -3792,7 +3813,7 @@ function App() {
       return;
     }
 
-    const repay = Math.round(principal * 1.3);
+    const repay = Math.round(principal * 1.1);
     const startTile = playerPositions[borrower];
     
     const newLoan = {
@@ -6036,7 +6057,7 @@ function App() {
           </div>
 
           {/* Action Buttons - Always visible so players with negative balance can take loans or sell properties */}
-          <div className="action-buttons">
+          <div className="action-buttons" style={showWarModal ? { zIndex: 1005 } : {}}>
             <button className="action-btn build" onClick={handleBuild}>
               <img src={buildIcon} alt="Build" className="btn-icon-img" />
             </button>
@@ -6412,7 +6433,7 @@ function App() {
                       </div>
                       <div className="modal-row" style={{ fontSize: '16px' }}>
                         <span>Interest Rate:</span>
-                        <span className="modal-value">30%</span>
+                        <span className="modal-value">10%</span>
                       </div>
                       <div className="modal-divider"></div>
                       <div className="modal-row">
@@ -6421,7 +6442,7 @@ function App() {
                       </div>
                       <div className="modal-row">
                         <span>Repay:</span>
-                        <span className="modal-value" style={{ color: '#f44336' }}>${Math.round(loanSliderValue * 1.3).toLocaleString()}</span>
+                        <span className="modal-value" style={{ color: '#f44336' }}>${Math.round(loanSliderValue * 1.1).toLocaleString()}</span>
                       </div>
                     </div>
 
@@ -6437,7 +6458,7 @@ function App() {
                         <input 
                           type="range" 
                           min="0"
-                          max="3000"
+                          max="5000"
                           step="100"
                           value={loanSliderValue}
                           onChange={(e) => setLoanSliderValue(parseInt(e.target.value))}
@@ -6446,7 +6467,7 @@ function App() {
                         />
                         <button 
                           className="deal-slider-btn" 
-                          onClick={() => setLoanSliderValue(prev => Math.min(3000, prev + 100))}
+                          onClick={() => setLoanSliderValue(prev => Math.min(5000, prev + 100))}
                           style={{ background: '#4CAF50' }}
                         >
                           +
@@ -6572,7 +6593,7 @@ function App() {
                  padding: '4px',
                  fontSize: '10px'
                }}>
-                 {getMonopolyTiles(currentPlayer).map(tileIdx => {
+                  {getMonopolyTiles(networkMode === 'online' && myPlayerIndex !== null ? myPlayerIndex : currentPlayer).map(tileIdx => {
                    const prop = RENT_DATA[tileIdx];
                    const level = propertyLevels[tileIdx] || 0;
                    const levelText = level === 0 ? '-' : level === 5 ? '🏨' : `🏠${level}`;
@@ -6732,7 +6753,7 @@ function App() {
 
       {/* Menu Modal */}
       {showMenuModal && (
-        <div className="modal-overlay">
+        <div className="modal-overlay" style={{ zIndex: 9999 }}>
           <div className="buy-modal deal-modal bank-modal" style={{ pointerEvents: 'auto', marginTop: '15vh', minWidth: '280px' }}>
             <div className="modal-heading" style={{ background: 'linear-gradient(to bottom, #607D8B 0%, #455A64 100%)' }}>
               <span className="modal-heading-text">☰ MENU</span>
@@ -6768,7 +6789,7 @@ function App() {
 
       {/* Exit Confirmation Modal */}
       {showExitConfirm && (
-        <div className="modal-overlay">
+        <div className="modal-overlay" style={{ zIndex: 9999 }}>
           <div className="buy-modal deal-modal bank-modal" style={{ pointerEvents: 'auto', marginTop: '20vh' }}>
             <div className="modal-heading" style={{ background: 'linear-gradient(to bottom, #f44336 0%, #c62828 100%)' }}>
               <span className="modal-heading-text">⚠️ EXIT GAME</span>
@@ -6993,9 +7014,9 @@ function App() {
       )}
 
       {/* Property War Modal */}
-      {showWarModal && !showBankModal && !showDealModal && !showDealReviewModal && !showDealResultModal && !showSellModal && !sellNoBuildingsModal && (
-        <div className="modal-overlay">
-          <div className="buy-modal war-modal">
+      {showWarModal && !showBankModal && !showDealModal && !showDealReviewModal && !showDealResultModal && !showSellModal && !sellNoBuildingsModal && !showBuildModal && !buildNoMonopolyModal && !sellMode && !buildMode && !showBankruptcyModal && (
+        <div className="modal-overlay" style={{ pointerEvents: 'none', background: 'rgba(0,0,0,0.25)' }}>
+          <div className="buy-modal war-modal" style={{ pointerEvents: 'auto' }}>
             {/* Header */}
             <div className="modal-heading" style={{ background: 'linear-gradient(to bottom, #E91E63 0%, #C2185B 100%)' }}>
               <span className="modal-heading-text">⚔️ PROPERTY WAR ⚔️</span>
@@ -7026,196 +7047,56 @@ function App() {
                       return (
                         <div key={idx} style={{ 
                           display: 'flex', 
-                          flexDirection: 'column',
-                          gap: '6px',
+                          justifyContent: 'space-between', 
+                          alignItems: 'center',
                           padding: '8px 10px',
                           marginBottom: '8px',
                           background: isJoined ? '#e8f5e9' : '#f5f5f5',
                           borderRadius: '8px',
                           border: isJoined ? '2px solid #4CAF50' : '1px solid #ddd'
                         }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              <img src={player.avatar} alt={player.name} style={{ width: '26px', height: '26px', borderRadius: '50%' }} />
-                              <span style={{ fontWeight: 'bold', fontSize: '13px' }}>{player.name}</span>
-                              <span style={{ 
-                                fontSize: '12px', 
-                                fontWeight: 'bold', 
-                                color: hasFunds ? '#2e7d32' : '#c62828',
-                                marginLeft: '4px'
-                              }}>
-                                (${(playerMoney[idx] || 0).toLocaleString()})
-                              </span>
-                            </div>
-                            <div style={{ display: 'flex', gap: '8px' }}>
-                              {/* Join/Withdraw Button Logic */}
-                              {isLocalInteractive ? (
-                                !isJoined ? (
-                                  <button 
-                                    className="modal-btn buy" 
-                                    style={{ padding: '6px 12px', fontSize: '12px' }}
-                                    onClick={() => handleWarJoin(idx)}
-                                    disabled={!hasFunds}
-                                  >
-                                    JOIN (${fee.toLocaleString()})
-                                  </button>
-                                ) : (
-                                  <button 
-                                    className="modal-btn cancel" 
-                                    style={{ padding: '6px 12px', fontSize: '12px' }}
-                                    onClick={() => handleWarWithdraw(idx)}
-                                  >
-                                    WITHDRAW
-                                  </button>
-                                )
-                              ) : (
-                                <span style={{ fontSize: '12px', color: '#5D4037', fontWeight: 'bold', fontStyle: 'italic' }}>
-                                  {isJoined ? 'Joined' : 'Thinking...'}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Quick Fund Options for unjoined player */}
-                          {isLocalInteractive && !isJoined && (
-                            <div style={{ 
-                              display: 'flex', 
-                              alignItems: 'center', 
-                              justifyContent: 'space-between',
-                              paddingTop: '6px',
-                              borderTop: '1px dashed #e0e0e0',
-                              fontSize: '11px',
-                              gap: '6px'
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <img src={player.avatar} alt={player.name} style={{ width: '26px', height: '26px', borderRadius: '50%' }} />
+                            <span style={{ fontWeight: 'bold', fontSize: '13px' }}>{player.name}</span>
+                            <span style={{ 
+                              fontSize: '12px', 
+                              fontWeight: 'bold', 
+                              color: hasFunds ? '#2e7d32' : '#c62828',
+                              marginLeft: '4px'
                             }}>
-                              <span style={{ color: hasFunds ? '#555' : '#c62828', fontWeight: 'bold' }}>
-                                {!hasFunds ? '⚠️ Need Funds to Join:' : 'Raise Funds:'}
+                              (${(playerMoney[idx] || 0).toLocaleString()})
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            {/* Join/Withdraw Button Logic */}
+                            {isLocalInteractive ? (
+                              !isJoined ? (
+                                <button 
+                                  className="modal-btn buy" 
+                                  style={{ padding: '6px 12px', fontSize: '12px' }}
+                                  onClick={() => handleWarJoin(idx)}
+                                  disabled={!hasFunds}
+                                >
+                                  JOIN (${fee.toLocaleString()})
+                                </button>
+                              ) : (
+                                <button 
+                                  className="modal-btn cancel" 
+                                  style={{ padding: '6px 12px', fontSize: '12px' }}
+                                  onClick={() => handleWarWithdraw(idx)}
+                                >
+                                  WITHDRAW
+                                </button>
+                              )
+                            ) : (
+                              <span style={{ fontSize: '12px', color: '#5D4037', fontWeight: 'bold', fontStyle: 'italic' }}>
+                                {isJoined ? 'Joined' : 'Thinking...'}
                               </span>
-                              <div style={{ display: 'flex', gap: '6px' }}>
-                                <button
-                                  type="button"
-                                  style={{
-                                    background: '#2e7d32',
-                                    color: '#fff',
-                                    border: 'none',
-                                    borderRadius: '4px',
-                                    padding: '4px 8px',
-                                    fontSize: '11px',
-                                    cursor: 'pointer',
-                                    fontWeight: 'bold'
-                                  }}
-                                  onClick={() => handleBank(idx)}
-                                  title="Borrow from Bank"
-                                >
-                                  🏦 Loan
-                                </button>
-                                <button
-                                  type="button"
-                                  style={{
-                                    background: '#0288d1',
-                                    color: '#fff',
-                                    border: 'none',
-                                    borderRadius: '4px',
-                                    padding: '4px 8px',
-                                    fontSize: '11px',
-                                    cursor: 'pointer',
-                                    fontWeight: 'bold'
-                                  }}
-                                  onClick={() => handleDeal(idx)}
-                                  title="Trade / Deal with others"
-                                >
-                                  🤝 Trade
-                                </button>
-                                <button
-                                  type="button"
-                                  style={{
-                                    background: '#f57c00',
-                                    color: '#fff',
-                                    border: 'none',
-                                    borderRadius: '4px',
-                                    padding: '4px 8px',
-                                    fontSize: '11px',
-                                    cursor: 'pointer',
-                                    fontWeight: 'bold'
-                                  }}
-                                  onClick={() => handleSell(idx)}
-                                  title="Sell buildings for refund"
-                                >
-                                  🏷️ Sell
-                                </button>
-                              </div>
-                            </div>
-                          )}
+                            )}
+                          </div>
                         </div>
                       );
                     })}
-                  </div>
-
-                  {/* General Fund Raising Toolbar */}
-                  <div style={{
-                    background: 'rgba(255, 152, 0, 0.08)',
-                    borderRadius: '8px',
-                    padding: '8px 12px',
-                    marginBottom: '15px',
-                    border: '1px dashed #FF9800',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    flexWrap: 'wrap',
-                    gap: '6px'
-                  }}>
-                    <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#E65100' }}>
-                      💰 Raise Money:
-                    </span>
-                    <div style={{ display: 'flex', gap: '6px' }}>
-                      <button 
-                        type="button"
-                        style={{
-                          background: '#2E7D32',
-                          color: '#fff',
-                          border: 'none',
-                          borderRadius: '4px',
-                          padding: '4px 10px',
-                          fontSize: '11px',
-                          fontWeight: 'bold',
-                          cursor: 'pointer'
-                        }}
-                        onClick={() => handleBank(networkMode === 'online' ? myPlayerIndex : currentPlayer)}
-                      >
-                        🏦 Take Loan
-                      </button>
-                      <button 
-                        type="button"
-                        style={{
-                          background: '#0288D1',
-                          color: '#fff',
-                          border: 'none',
-                          borderRadius: '4px',
-                          padding: '4px 10px',
-                          fontSize: '11px',
-                          fontWeight: 'bold',
-                          cursor: 'pointer'
-                        }}
-                        onClick={() => handleDeal(networkMode === 'online' ? myPlayerIndex : currentPlayer)}
-                      >
-                        🤝 Deal
-                      </button>
-                      <button 
-                        type="button"
-                        style={{
-                          background: '#F57C00',
-                          color: '#fff',
-                          border: 'none',
-                          borderRadius: '4px',
-                          padding: '4px 10px',
-                          fontSize: '11px',
-                          fontWeight: 'bold',
-                          cursor: 'pointer'
-                        }}
-                        onClick={() => handleSell(networkMode === 'online' ? myPlayerIndex : currentPlayer)}
-                      >
-                        🏷️ Sell
-                      </button>
-                    </div>
                   </div>
                   
                   <div className="modal-buttons" style={{ gap: '10px' }}>

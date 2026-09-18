@@ -1280,11 +1280,6 @@ function handleRollDice(room, playerIndex, payload = {}) {
             room.gameState.playerMoney[playerIndex] -= repayAmt;
             delete room.gameState.playerLoans[playerIndex];
             room.gameState.history.unshift(`🏦 Bank auto-debited $${repayAmt.toLocaleString()} loan repayment from ${pName}`);
-            io.to(room.roomCode).emit('floating_price', {
-              tileIndex: newPos,
-              price: repayAmt,
-              isPositive: false
-            });
           } else {
             room.gameState.history.unshift(`🏦 ${pName} completed a lap! ${loan.lapsRemaining} lap${loan.lapsRemaining > 1 ? 's' : ''} left to repay loan.`);
           }
@@ -1522,7 +1517,7 @@ function handleTakeLoan(room, playerIndex, payload) {
   }
   
   const principal = Math.min(10000, Math.max(1000, Number(payload?.principalAmount) || 1000));
-  const repay = Math.round(principal * 1.3);
+  const repay = Math.round(principal * 1.1);
   const startTile = room.gameState.playerPositions[playerIndex];
   
   if (!room.gameState.playerLoans) room.gameState.playerLoans = {};
@@ -1624,6 +1619,7 @@ function handleParkingConfirm(room, playerIndex) {
   const pName = room.players[playerIndex]?.name || `Player ${playerIndex}`;
   room.gameState.history.unshift(`🅿️ ${pName} resting at Free Parking (skips next turn).`);
   if (room.gameState.history.length > 50) room.gameState.history.length = 50;
+  room.gameState.modalState = { type: 'NONE', status: 'IDLE', payload: {} };
   handleEndTurn(room);
   broadcastState(room);
 }

@@ -280,6 +280,13 @@ body {
   padding: 2px 2px 0;
   text-shadow: 0 1px 1px rgba(255, 255, 255, 0.6);
   word-break: break-word;
+  /* Prevent text from bleeding outside tile */
+  width: 100%;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  text-overflow: ellipsis;
 }
 
 /* Dark tiles high-contrast text */
@@ -324,6 +331,7 @@ body {
 .tile.horizontal {
   width: var(--tile-width);
   height: var(--corner-size);
+  overflow: hidden;
 }
 
 /* Vertical tiles (left and right columns) - width matches corner */
