@@ -135,6 +135,8 @@ export default function MatchmakingView({
   setNetworkType = () => {},
   hotspotServerUrl,
   onlineServerUrl,
+  joinError = '',
+  setJoinError = () => {},
 }) {
   const [onlineTab, setOnlineTab] = useState('host');
   const [isCopied, setIsCopied] = useState(false);
@@ -157,6 +159,7 @@ export default function MatchmakingView({
   const handlePinChange = (e) => {
     const rawVal = e.target.value.replace(/\D/g, '').slice(0, 4);
     setJoinCode(rawVal);
+    if (joinError && setJoinError) setJoinError('');
   };
 
   const handlePasteCode = async () => {
@@ -599,6 +602,23 @@ export default function MatchmakingView({
                     <span>→</span>
                   </button>
                 </div>
+
+                {joinError && (
+                  <div style={{
+                    marginTop: '12px',
+                    padding: '10px 14px',
+                    borderRadius: '8px',
+                    background: 'rgba(239, 68, 68, 0.15)',
+                    border: '1px solid rgba(239, 68, 68, 0.4)',
+                    color: '#f87171',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    textAlign: 'center',
+                    lineHeight: '1.4'
+                  }}>
+                    ⚠️ {joinError}
+                  </div>
+                )}
               </div>
             )}
           </div>

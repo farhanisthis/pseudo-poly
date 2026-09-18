@@ -1207,3 +1207,268 @@
   background: rgba(255, 255, 255, 0.15);
   color: #ffffff;
 }
+
+/* =========================================================
+   COMPACT MOBILE STYLES (portrait phones ≤ 480px wide
+   OR short screens ≤ 700px tall)
+   All functionality preserved, just tighter spacing
+   ========================================================= */
+
+@media (max-width: 480px), (max-height: 700px) {
+  .mm-container {
+    padding: 14px 14px;
+    border-radius: 18px;
+    max-height: 96vh;
+  }
+
+  /* Header */
+  .mm-header {
+    margin-bottom: 10px;
+    min-height: 32px;
+  }
+  .mm-header-title {
+    font-size: 17px;
+    letter-spacing: 0.5px;
+  }
+  .mm-back-btn {
+    width: 32px;
+    height: 32px;
+    font-size: 15px;
+  }
+  .mm-header-spacer {
+    width: 32px;
+  }
+
+  /* Welcome screen */
+  .mm-menu-view {
+    padding: 10px 4px 4px;
+  }
+  .mm-logo-badge {
+    font-size: 10px;
+    padding: 3px 10px;
+    margin-bottom: 6px;
+  }
+  .mm-game-title {
+    font-size: 32px;
+    margin-bottom: 4px;
+  }
+  .mm-game-subtitle {
+    font-size: 11px;
+    margin-bottom: 18px;
+  }
+  .mm-primary-btn {
+    font-size: 17px;
+    padding: 11px 24px;
+    border-radius: 14px;
+    max-width: 240px;
+    gap: 8px;
+  }
+
+  /* Mode selection */
+  .mm-mode-grid {
+    gap: 10px;
+    margin-top: 2px;
+  }
+  .mm-mode-card {
+    padding: 12px 12px;
+    gap: 12px;
+    border-radius: 14px;
+  }
+  .mm-mode-icon-wrap {
+    width: 42px;
+    height: 42px;
+    border-radius: 12px;
+    font-size: 20px;
+  }
+  .mm-mode-title {
+    font-size: 16px;
+    margin-bottom: 2px;
+  }
+  .mm-mode-desc {
+    font-size: 11px;
+  }
+  .mm-mode-badge {
+    font-size: 9px;
+    padding: 1px 6px;
+    margin-bottom: 2px;
+  }
+  .mm-mode-arrow {
+    font-size: 16px;
+  }
+
+  /* Wi-Fi bar */
+  .mm-wifi-bar {
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    border-radius: 10px;
+  }
+  .mm-wifi-status {
+    font-size: 11px;
+    gap: 6px;
+  }
+  .mm-wifi-cfg-btn {
+    font-size: 10px;
+    padding: 3px 8px;
+  }
+
+  /* Identity card */
+  .mm-identity-card {
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    gap: 8px;
+    border-radius: 14px;
+  }
+  .mm-identity-profile {
+    gap: 10px;
+  }
+  .mm-identity-avatar-wrap {
+    width: 44px;
+    height: 44px;
+  }
+  .mm-input-label {
+    font-size: 10px;
+  }
+  .mm-name-input {
+    height: 36px;
+    font-size: 14px;
+    padding: 0 10px;
+    border-radius: 8px;
+  }
+
+  /* Avatar strip */
+  .mm-avatar-strip {
+    gap: 6px;
+    padding-top: 6px;
+  }
+  .mm-avatar-opt {
+    width: 38px;
+    height: 38px;
+  }
+  .mm-avatar-check {
+    width: 13px;
+    height: 13px;
+    font-size: 8px;
+  }
+
+  /* Tabs */
+  .mm-tabs {
+    margin-bottom: 10px;
+    border-radius: 11px;
+    padding: 3px;
+  }
+  .mm-tab-btn {
+    padding: 7px 8px;
+    font-size: 13px;
+    gap: 5px;
+    border-radius: 8px;
+  }
+
+  /* Host panel */
+  .mm-host-panel {
+    gap: 10px;
+    padding: 6px 0;
+  }
+  .mm-perks-list {
+    gap: 5px;
+    padding: 8px 12px;
+    font-size: 12px;
+    border-radius: 10px;
+  }
+  .mm-perk-item {
+    gap: 7px;
+  }
+
+  /* Join panel */
+  .mm-join-panel {
+    gap: 12px;
+    padding: 6px 0;
+  }
+  .mm-pin-box {
+    width: 52px;
+    height: 60px;
+    font-size: 28px;
+    border-radius: 12px;
+  }
+  .mm-pin-container {
+    gap: 8px;
+  }
+
+  /* Lobby: room code card */
+  .mm-code-card {
+    padding: 8px 12px;
+    margin-bottom: 10px;
+    border-radius: 12px;
+  }
+  .mm-code-digit {
+    width: 26px;
+    height: 32px;
+    font-size: 17px;
+    border-radius: 6px;
+  }
+  .mm-copy-btn {
+    padding: 6px 12px;
+    font-size: 11px;
+    border-radius: 8px;
+  }
+
+  /* Lobby: player slots */
+  .mm-slots-header {
+    margin-bottom: 6px;
+  }
+  .mm-slots-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .mm-player-slot {
+    min-height: 80px;
+    padding: 6px 4px;
+    border-radius: 12px;
+  }
+  .mm-slot-avatar-wrap {
+    width: 36px;
+    height: 36px;
+    margin-bottom: 4px;
+  }
+  .mm-slot-name {
+    font-size: 11px;
+    max-width: 70px;
+  }
+  .mm-slot-badge {
+    font-size: 8px;
+    padding: 1px 4px;
+  }
+  .mm-slot-crown {
+    top: 4px;
+    right: 4px;
+  }
+  .mm-empty-radar {
+    width: 30px;
+    height: 30px;
+    font-size: 13px;
+    margin-bottom: 4px;
+  }
+  .mm-empty-label {
+    font-size: 10px;
+  }
+
+  /* Lobby alerts & actions */
+  .mm-lobby-alert {
+    padding: 6px 10px;
+    font-size: 11px;
+    border-radius: 8px;
+  }
+  .mm-lobby-actions {
+    gap: 7px;
+    margin-top: 2px;
+  }
+  .mm-leave-btn {
+    font-size: 13px;
+    padding: 9px;
+    border-radius: 10px;
+  }
+  .mm-waiting-host-msg {
+    font-size: 12px;
+    padding: 10px 0;
+  }
+}
