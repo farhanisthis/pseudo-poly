@@ -271,7 +271,13 @@ function App() {
     setShowResumeModal(false);
     setNetworkMode('online');
     if (session.networkType) setNetworkType(session.networkType);
-    if (session.serverUrl) setServerUrl(session.serverUrl);
+    if (session.serverUrl) {
+      if (session.networkType === 'online' || session.serverUrl.includes('.onrender.com') || session.serverUrl.startsWith('https://')) {
+        setOnlineServerUrl(session.serverUrl);
+      } else {
+        setHotspotServerUrl(session.serverUrl);
+      }
+    }
     
     showToast(`Reconnecting to room ${session.roomCode}...`);
     const socket = connectSocket(session.serverUrl);
@@ -562,8 +568,18 @@ function App() {
   const formatServerUrl = (raw) => {
     let formatted = (raw || '').trim();
     if (!formatted) return '';
+
+    // If pointing to Netlify frontend (e.g. from user input or stale localStorage), redirect to actual Render backend
+    if (formatted.includes('pseudo-poly.netlify.app') || formatted.includes('.netlify.app')) {
+      return 'https://pseudo-poly.onrender.com';
+    }
+
+    const isPageHttps = typeof window !== 'undefined' && window.location && window.location.protocol === 'https:';
+
+    // Normalize protocol
     if (!formatted.startsWith('http://') && !formatted.startsWith('https://')) {
       if (
+        isPageHttps ||
         formatted.includes('.onrender.com') ||
         formatted.includes('.railway.app') ||
         formatted.includes('.herokuapp.com') ||
@@ -576,6 +592,27 @@ function App() {
         formatted = 'http://' + formatted;
       }
     }
+
+    // If page is loaded over HTTPS, never allow insecure http:// on public domains
+    if (isPageHttps && formatted.startsWith('http://')) {
+      const match = formatted.match(/^http:\/\/([^/:]+)(:\d+)?(\/.*)?$/);
+      if (match) {
+        const host = match[1];
+        if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(host) && host !== 'localhost') {
+          formatted = `https://${host}${match[3] || ''}`;
+        }
+      }
+    }
+
+    // Cloud deployment platforms use standard port 443 (HTTPS), not 3001
+    if (
+      formatted.includes('.onrender.com:3001') ||
+      formatted.includes('.railway.app:3001') ||
+      formatted.includes('.herokuapp.com:3001')
+    ) {
+      formatted = formatted.replace(':3001', '');
+    }
+
     // Auto-append port :3001 only for HTTP IP addresses or localhost
     if (formatted.startsWith('http://')) {
       const match = formatted.match(/^(https?:\/\/[^/:]+)(\/.*)?$/);
@@ -591,18 +628,24 @@ function App() {
 
   const getInitialHotspotUrl = () => {
     try {
+      const isHttps = typeof window !== 'undefined' && window.location && window.location.protocol === 'https:';
+      if (isHttps) {
+        // On HTTPS pages, browsers block any insecure http:// or ws:// LAN connections.
+        return getInitialOnlineUrl();
+      }
       const stored = localStorage.getItem('pseudopoly_hotspot_url');
       if (stored && !stored.includes('localhost') && !stored.includes('127.0.0.1')) {
-        return formatServerUrl(stored);
+        if (!stored.includes('netlify.app')) {
+          return formatServerUrl(stored);
+        }
       }
-      // If loaded in a browser on another device on LAN, use hostname if not localhost
+      // If loaded in a browser on another device on LAN, use hostname only if strictly numeric LAN IP
       if (typeof window !== 'undefined' && window.location && window.location.hostname) {
         const hostname = window.location.hostname;
-        if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
+        if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname) && hostname !== '127.0.0.1') {
           return `http://${hostname}:3001`;
         }
       }
-      // Default for Android Hotspot Gateway (Mini Militia style tethering)
       return 'http://192.168.43.1:3001';
     } catch {
       return 'http://192.168.43.1:3001';
@@ -612,17 +655,41 @@ function App() {
   const getInitialOnlineUrl = () => {
     try {
       const stored = localStorage.getItem('pseudopoly_online_url');
-      if (stored) return formatServerUrl(stored);
-      if (import.meta.env.VITE_SERVER_URL) return formatServerUrl(import.meta.env.VITE_SERVER_URL);
+      if (stored && !stored.includes('netlify.app')) {
+        return formatServerUrl(stored);
+      }
+      if (import.meta.env.VITE_SERVER_URL) {
+        return formatServerUrl(import.meta.env.VITE_SERVER_URL);
+      }
     } catch {}
     return 'https://pseudo-poly.onrender.com';
   };
 
-  const [networkType, setNetworkType] = useState('wifi'); // 'wifi' or 'online'
+  const isHttpsPage = typeof window !== 'undefined' && window.location && window.location.protocol === 'https:';
+  const isPublicDomain = typeof window !== 'undefined' && window.location && window.location.hostname &&
+    (window.location.hostname.includes('.netlify.app') ||
+     window.location.hostname.includes('.onrender.com') ||
+     window.location.hostname.includes('.vercel.app') ||
+     (!/^(\d{1,3}\.){3}\d{1,3}$/.test(window.location.hostname) && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'));
+
+  const [networkType, setNetworkType] = useState(() => {
+    if (isHttpsPage || isPublicDomain) {
+      return 'online';
+    }
+    return 'wifi';
+  });
   const [hotspotServerUrl, setHotspotServerUrl] = useState(getInitialHotspotUrl);
   const [onlineServerUrl, setOnlineServerUrl] = useState(getInitialOnlineUrl);
 
   const serverUrl = networkType === 'online' ? onlineServerUrl : hotspotServerUrl;
+  const setServerUrl = (newUrl) => {
+    if (!newUrl) return;
+    if (networkType === 'online' || newUrl.includes('.onrender.com') || newUrl.startsWith('https://')) {
+      setOnlineServerUrl(newUrl);
+    } else {
+      setHotspotServerUrl(newUrl);
+    }
+  };
   const [socketConnected, setSocketConnected] = useState(false);
   const isConnectingRef = useRef(false);
 
@@ -678,7 +745,19 @@ function App() {
 
   // Connect to Socket.IO server and set up event handlers
   const connectSocket = (explicitUrl = null) => {
-    const targetUrl = explicitUrl || serverUrl;
+    let targetUrl = formatServerUrl(explicitUrl || serverUrl);
+    
+    // Safety check: On HTTPS pages, any http:// or ws:// connection is blocked by browser mixed content policy
+    const isPageHttps = typeof window !== 'undefined' && window.location && window.location.protocol === 'https:';
+    if (isPageHttps && targetUrl.startsWith('http://')) {
+      console.warn('[connectSocket] HTTPS page detected; upgrading targetUrl to secure endpoint:', targetUrl);
+      if (targetUrl.includes('localhost') || /^http:\/\/(\d{1,3}\.){3}\d{1,3}/.test(targetUrl) || targetUrl.includes('netlify.app')) {
+        targetUrl = 'https://pseudo-poly.onrender.com';
+      } else {
+        targetUrl = targetUrl.replace('http://', 'https://').replace(':3001', '');
+      }
+    }
+
     if (socketRef.current && socketRef.current.connected) return socketRef.current;
     if (socketRef.current) {
       if (!socketRef.current.connected) {
@@ -692,7 +771,8 @@ function App() {
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
       timeout: 6000,
-      transports: ['websocket', 'polling']
+      transports: ['websocket', 'polling'],
+      secure: isPageHttps || targetUrl.startsWith('https://')
     });
     socketRef.current = socket;
     

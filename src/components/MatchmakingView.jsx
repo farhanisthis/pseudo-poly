@@ -306,6 +306,13 @@ export default function MatchmakingView({
               <div 
                 className="mm-mode-card wifi"
                 onClick={() => {
+                  if (typeof window !== 'undefined' && window.location && window.location.protocol === 'https:') {
+                    if (showToast) showToast("Note: Local Wi-Fi requires HTTP. Switched to Online Rooms.");
+                    setNetworkType('online');
+                    setNetworkMode('online');
+                    setGameStage('online_menu');
+                    return;
+                  }
                   setNetworkType('wifi');
                   setNetworkMode('online');
                   setGameStage('online_menu');
